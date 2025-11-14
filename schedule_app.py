@@ -1,20 +1,295 @@
 import sys
 import json
 import os
+import socket
+import threading
+import base64
+import tempfile
+import getpass
 from collections import defaultdict
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget, QTableWidgetItem,
                              QPushButton, QVBoxLayout, QWidget, QHBoxLayout, QMenu,
                              QLabel, QMessageBox, QFileDialog, QHeaderView,
                              QAction, QComboBox, QInputDialog, QDialog, 
                              QVBoxLayout, QCheckBox, QScrollArea, QDialogButtonBox,
-                             QShortcut, QTimeEdit, QFormLayout, QGridLayout, QSplitter)
+                             QShortcut, QTimeEdit, QFormLayout, QGridLayout, QSplitter,
+                             QLineEdit, QCheckBox, QMenuBar, QListWidget)
 from PyQt5.QtCore import Qt, QSettings, QThread, pyqtSignal, QTime, QDate
-from PyQt5.QtGui import QColor, QKeySequence, QFont, QPainter, QIcon
+from PyQt5.QtGui import QColor, QKeySequence, QFont, QPainter, QIcon, QIntValidator
 from datetime import datetime
 from calendar import monthrange
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
 from openpyxl.utils import get_column_letter
+
+
+class ServerConnectionDialog(QDialog):
+    def __init__(self, parent=None, current_host='localhost', current_port=8888, current_network_mode=False):
+        super().__init__(parent)
+        self.setWindowTitle("Настройки подключения к серверу")
+        self.setModal(True)
+        self.setFixedSize(350, 200)
+        
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+        
+        form_layout = QFormLayout()
+        
+        self.host_edit = QLineEdit(current_host)
+        self.port_edit = QLineEdit(str(current_port))
+        self.port_edit.setValidator(QIntValidator(1, 65535))
+        
+        form_layout.addRow("Хост сервера:", self.host_edit)
+        form_layout.addRow("Порт:", self.port_edit)
+        
+        layout.addLayout(form_layout)
+        
+        self.use_network_cb = QCheckBox("Использовать сетевой режим")
+        self.use_network_cb.setChecked(current_network_mode)
+        layout.addWidget(self.use_network_cb)
+        
+        # Информация о текущем подключении
+        self.status_label = QLabel()
+        self.update_status_label(current_network_mode, current_host, current_port)
+        layout.addWidget(self.status_label)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+    
+    def update_status_label(self, network_mode, host, port):
+        if network_mode:
+            self.status_label.setText(f"Текущий режим: СЕТЕВОЙ\nСервер: {host}:{port}")
+            self.status_label.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.status_label.setText("Текущий режим: ЛОКАЛЬНЫЙ")
+            self.status_label.setStyleSheet("color: blue; font-weight: bold;")
+    
+    def get_connection_params(self):
+        return {
+            'use_network': self.use_network_cb.isChecked(),
+            'host': self.host_edit.text(),
+            'port': int(self.port_edit.text()) if self.port_edit.text() else 8888
+        }
+
+
+class NetworkManager:
+    def __init__(self):
+        self.socket = None
+        self.host = 'localhost'
+        self.port = 8888
+        self.is_connected = False
+        
+    def connect_to_server(self, host=None, port=None):
+        """Подключение к серверу"""
+        if host:
+            self.host = host
+        if port:
+            self.port = port
+            
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(5)
+            self.socket.connect((self.host, self.port))
+            self.is_connected = True
+            return True
+        except Exception as e:
+            self.is_connected = False
+            return False
+    
+    def disconnect(self):
+        """Отключение от сервера"""
+        self.is_connected = False
+        if self.socket:
+            self.socket.close()
+            self.socket = None
+    
+    def send_request(self, request):
+        """Отправка запроса на сервер"""
+        if not self.is_connected or not self.socket:
+            return None
+            
+        try:
+            data = json.dumps(request).encode('utf-8')
+            self.socket.send(data)
+            
+            # Ждем ответ
+            response_data = self.socket.recv(10240).decode('utf-8')
+            if response_data:
+                return json.loads(response_data)
+            return None
+        except Exception as e:
+            return None
+
+
+class SharedFilesDialog(QDialog):
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.setWindowTitle("Общие Excel файлы")
+        self.setModal(True)
+        self.setMinimumSize(600, 500)
+        
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+        
+        # Заголовок
+        layout.addWidget(QLabel("Доступные Excel файлы на сервере:"))
+        
+        # Таблица файлов
+        self.files_table = QTableWidget()
+        self.files_table.setColumnCount(5)
+        self.files_table.setHorizontalHeaderLabels(["ID", "Имя файла", "Размер", "Автор", "Дата создания"])
+        self.files_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.files_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.files_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.files_table)
+        
+        # Кнопки
+        button_layout = QHBoxLayout()
+        
+        self.refresh_btn = QPushButton("Обновить")
+        self.refresh_btn.clicked.connect(self.refresh_files)
+        button_layout.addWidget(self.refresh_btn)
+        
+        self.download_btn = QPushButton("Скачать")
+        self.download_btn.clicked.connect(self.download_file)
+        button_layout.addWidget(self.download_btn)
+        
+        self.open_btn = QPushButton("Открыть")
+        self.open_btn.clicked.connect(self.open_file)
+        button_layout.addWidget(self.open_btn)
+        
+        self.delete_btn = QPushButton("Удалить")
+        self.delete_btn.clicked.connect(self.delete_file)
+        button_layout.addWidget(self.delete_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Статус
+        self.status_label = QLabel("")
+        layout.addWidget(self.status_label)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+        self.refresh_files()
+    
+    def refresh_files(self):
+        """Обновить список файлов"""
+        self.files_table.setRowCount(0)
+        files = self.db.get_available_excel_files()
+        
+        if not files:
+            self.status_label.setText("Нет доступных файлов на сервере")
+            return
+        
+        self.files_table.setRowCount(len(files))
+        
+        for row, file_info in enumerate(files):
+            # ID
+            id_item = QTableWidgetItem(str(file_info['id']))
+            id_item.setData(Qt.UserRole, file_info)
+            self.files_table.setItem(row, 0, id_item)
+            
+            # Имя файла
+            self.files_table.setItem(row, 1, QTableWidgetItem(file_info['file_name']))
+            
+            # Размер
+            size_kb = file_info['file_size'] / 1024
+            self.files_table.setItem(row, 2, QTableWidgetItem(f"{size_kb:.1f} KB"))
+            
+            # Автор
+            self.files_table.setItem(row, 3, QTableWidgetItem(file_info['created_by']))
+            
+            # Дата
+            created_at = file_info['created_at']
+            if 'T' in created_at:
+                created_at = created_at.split('T')[0]
+            self.files_table.setItem(row, 4, QTableWidgetItem(created_at))
+        
+        self.status_label.setText(f"Найдено файлов: {len(files)}")
+    
+    def get_selected_file(self):
+        """Получить выбранный файл"""
+        current_row = self.files_table.currentRow()
+        if current_row >= 0:
+            item = self.files_table.item(current_row, 0)
+            return item.data(Qt.UserRole)
+        return None
+    
+    def download_file(self):
+        """Скачать выбранный файл"""
+        file_info = self.get_selected_file()
+        if not file_info:
+            QMessageBox.warning(self, "Ошибка", "Выберите файл для скачивания")
+            return
+        
+        file_name = file_info['file_name']
+        file_id = file_info['id']
+        
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения")
+        if folder:
+            save_path = os.path.join(folder, file_name)
+            if self.db.get_excel_from_server(file_name, save_path, file_id):
+                QMessageBox.information(self, "Успех", f"Файл скачан:\n{save_path}")
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось скачать файл")
+    
+    def open_file(self):
+        """Открыть выбранный файл"""
+        file_info = self.get_selected_file()
+        if not file_info:
+            QMessageBox.warning(self, "Ошибка", "Выберите файл для открытия")
+            return
+        
+        file_name = file_info['file_name']
+        file_id = file_info['id']
+        
+        # Создаем временный файл
+        temp_dir = tempfile.gettempdir()
+        temp_path = os.path.join(temp_dir, file_name)
+        
+        if self.db.get_excel_from_server(file_name, temp_path, file_id):
+            try:
+                if sys.platform == "win32":
+                    os.startfile(temp_path)
+                elif sys.platform == "darwin":
+                    os.system(f'open "{temp_path}"')
+                else:
+                    os.system(f'xdg-open "{temp_path}"')
+                self.status_label.setText(f"Файл открыт: {file_name}")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось открыть файл: {str(e)}")
+        else:
+            QMessageBox.warning(self, "Ошибка", "Не удалось загрузить файл с сервера")
+    
+    def delete_file(self):
+        """Удалить выбранный файл"""
+        file_info = self.get_selected_file()
+        if not file_info:
+            QMessageBox.warning(self, "Ошибка", "Выберите файл для удаления")
+            return
+        
+        file_name = file_info['file_name']
+        file_id = file_info['id']
+        
+        reply = QMessageBox.question(
+            self, 
+            "Подтверждение удаления",
+            f"Вы уверены, что хотите удалить файл '{file_name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.db.delete_excel_file(file_id):
+                QMessageBox.information(self, "Успех", "Файл удален")
+                self.refresh_files()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось удалить файл")
 
 
 class MonthSelectionDialog(QDialog):
@@ -108,18 +383,6 @@ class NoteTableWidget(QTableWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(255, 0, 0))
-
-        # Красная пометка Примечание        
-        # for row in range(self.rowCount()):
-        #     for col in range(self.columnCount() - 4):  # Исключаем столбцы подсчета (теперь их 4)
-        #         item = self.item(row, col)
-        #         if item and item.data(Qt.UserRole):
-        #             rect = self.visualRect(self.model().index(row, col))
-        #             dot_size = 6
-        #             dot_x = rect.right() - dot_size - 2
-        #             dot_y = rect.top() + 2
-        #             painter.drawEllipse(dot_x, dot_y, dot_size, dot_size)
-        
         painter.end()
     
     def setItem(self, row, column, item):
@@ -273,69 +536,270 @@ class NoteItem(QTableWidgetItem):
 
 
 class ScheduleManager:
-    def __init__(self):
-        self.schedule_folder = "schedules"
-        self.employees_file = "employees.json"
-        os.makedirs(self.schedule_folder, exist_ok=True)
-        self.employees = self.load_employees()
-        self._cache = {}
+    def __init__(self, use_network=False, server_host='localhost', server_port=8888):
+        self.use_network = use_network
+        self.network_manager = None
+        self.server_host = server_host
+        self.server_port = server_port
+        
+        if use_network:
+            self.network_manager = NetworkManager()
+            if not self.network_manager.connect_to_server(server_host, server_port):
+                raise Exception("Не удалось подключиться к серверу")
+        else:
+            # Локальный режим (оригинальный код)
+            self.schedule_folder = "schedules"
+            self.employees_file = "employees.json"
+            os.makedirs(self.schedule_folder, exist_ok=True)
+            self.employees = self.load_employees()
+            self._cache = {}
+    
+    def reconnect(self, use_network=None, server_host=None, server_port=None):
+        """Переподключение с новыми параметрами"""
+        if use_network is not None:
+            self.use_network = use_network
+        if server_host is not None:
+            self.server_host = server_host
+        if server_port is not None:
+            self.server_port = server_port
+            
+        if self.network_manager:
+            self.network_manager.disconnect()
+            
+        if self.use_network:
+            self.network_manager = NetworkManager()
+            return self.network_manager.connect_to_server(self.server_host, self.server_port)
+        else:
+            return True
     
     def load_employees(self):
-        if os.path.exists(self.employees_file):
-            try:
-                with open(self.employees_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                return []
-        return []
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            response = self.network_manager.send_request({'action': 'get_employees'})
+            if response and response.get('status') == 'success':
+                return response.get('data', [])
+            return []
+        else:
+            # Локальный режим
+            if os.path.exists(self.employees_file):
+                try:
+                    with open(self.employees_file, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                except:
+                    return []
+            return []
     
     def save_employees(self):
-        try:
-            with open(self.employees_file, 'w', encoding='utf-8') as f:
-                json.dump(self.employees, f, ensure_ascii=False, indent=2)
-            return True
-        except:
-            return False
+        if self.use_network:
+            return True  # В сетевом режиме сотрудники сохраняются на сервере
+        else:
+            try:
+                with open(self.employees_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.employees, f, ensure_ascii=False, indent=2)
+                return True
+            except:
+                return False
     
     def get_periods(self):
-        periods = []
-        for filename in os.listdir(self.schedule_folder):
-            if filename.endswith(".json"):
-                periods.append(filename[:-5])
-        # Сортировка по возрастанию (сначала старые, потом новые)
-        return sorted(periods)
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            response = self.network_manager.send_request({'action': 'get_periods'})
+            if response and response.get('status') == 'success':
+                return [item['period'] for item in response.get('data', [])]
+            return []
+        else:
+            # Локальный режим
+            periods = []
+            for filename in os.listdir(self.schedule_folder):
+                if filename.endswith(".json"):
+                    periods.append(filename[:-5])
+            return sorted(periods)
     
     def load_schedule(self, period):
-        if period in self._cache:
-            return self._cache[period]
-            
-        filepath = os.path.join(self.schedule_folder, f"{period}.json")
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if 'notes' not in data:
-                        data['notes'] = {}
-                    self._cache[period] = data
-                    return data
-            except:
-                return None
-        return None
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            response = self.network_manager.send_request({
+                'action': 'get_schedule',
+                'period': period
+            })
+            if response and response.get('status') == 'success':
+                return response.get('data')
+            return None
+        else:
+            # Локальный режим
+            if period in self._cache:
+                return self._cache[period]
+                
+            filepath = os.path.join(self.schedule_folder, f"{period}.json")
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        if 'notes' not in data:
+                            data['notes'] = {}
+                        self._cache[period] = data
+                        return data
+                except:
+                    return None
+            return None
     
     def save_schedule(self, period, data):
-        filepath = os.path.join(self.schedule_folder, f"{period}.json")
-        try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            self._cache[period] = data
-            return True
-        except:
-            return False
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            response = self.network_manager.send_request({
+                'action': 'save_schedule',
+                'period': period,
+                'schedule_data': data
+            })
+            return response and response.get('status') == 'success'
+        else:
+            # Локальный режим
+            filepath = os.path.join(self.schedule_folder, f"{period}.json")
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                self._cache[period] = data
+                return True
+            except:
+                return False
     
     def add_employee(self, name):
-        if not any(emp["name"].lower() == name.lower() for emp in self.employees):
-            self.employees.append({"name": name, "position": ""})
-            return self.save_employees()
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            response = self.network_manager.send_request({
+                'action': 'add_employee',
+                'name': name
+            })
+            return response and response.get('status') == 'success'
+        else:
+            # Локальный режим
+            if not any(emp["name"].lower() == name.lower() for emp in self.employees):
+                self.employees.append({"name": name, "position": ""})
+                return self.save_employees()
+            return False
+    
+    def create_period(self, period, employee_names):
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            # Получаем ID сотрудников
+            employees = self.load_employees()
+            employee_ids = []
+            for emp in employees:
+                if emp['name'] in employee_names:
+                    employee_ids.append(emp['id'])
+            
+            response = self.network_manager.send_request({
+                'action': 'create_period',
+                'period': period,
+                'employee_ids': employee_ids
+            })
+            return response and response.get('status') == 'success'
+        else:
+            # Локальный режим
+            try:
+                year, month = map(int, period.split('-'))
+                days_in_month = monthrange(year, month)[1]
+            except:
+                days_in_month = 31
+            
+            selected_employees = [emp for emp in self.employees if emp["name"] in employee_names]
+            
+            return self.save_schedule(period, {
+                "employees": selected_employees,
+                "schedule": {emp["name"]: [4]*days_in_month for emp in selected_employees},
+                "notes": {}
+            })
+    
+    def add_employees_to_period(self, period, employee_names):
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            employees = self.load_employees()
+            employee_ids = []
+            for emp in employees:
+                if emp['name'] in employee_names:
+                    employee_ids.append(emp['id'])
+            
+            response = self.network_manager.send_request({
+                'action': 'add_employees_to_period',
+                'period': period,
+                'employee_ids': employee_ids
+            })
+            return response and response.get('status') == 'success'
+        else:
+            # Локальный режим
+            schedule_data = self.load_schedule(period)
+            if not schedule_data:
+                return False
+            
+            new_employees = [emp for emp in self.employees if emp["name"] in employee_names and emp not in schedule_data["employees"]]
+            
+            try:
+                year, month = map(int, period.split('-'))
+                days_in_month = monthrange(year, month)[1]
+            except:
+                days_in_month = 31
+            
+            schedule_data["employees"].extend(new_employees)
+            for emp in new_employees:
+                schedule_data["schedule"][emp["name"]] = [4] * days_in_month
+            
+            return self.save_schedule(period, schedule_data)
+
+    # НОВЫЕ МЕТОДЫ ДЛЯ EXCEL ФАЙЛОВ
+    
+    def save_excel_to_server(self, file_path, created_by="Unknown"):
+        """Сохранить Excel файл на сервер"""
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            try:
+                with open(file_path, 'rb') as f:
+                    file_data = base64.b64encode(f.read()).decode('utf-8')
+                
+                file_name = os.path.basename(file_path)
+                response = self.network_manager.send_request({
+                    'action': 'save_excel_file',
+                    'file_name': file_name,
+                    'file_data': file_data,
+                    'created_by': created_by
+                })
+                return response and response.get('status') == 'success'
+            except Exception as e:
+                print(f"Error saving Excel to server: {e}")
+                return False
+        return False
+    
+    def get_excel_from_server(self, file_name, save_path, file_id=None):
+        """Загрузить Excel файл с сервера"""
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            request_data = {'action': 'get_excel_file'}
+            if file_id:
+                request_data['file_id'] = file_id
+            else:
+                request_data['file_name'] = file_name
+                
+            response = self.network_manager.send_request(request_data)
+            
+            if response and response.get('status') == 'success':
+                try:
+                    file_data = base64.b64decode(response.get('file_data'))
+                    with open(save_path, 'wb') as f:
+                        f.write(file_data)
+                    return True
+                except Exception as e:
+                    print(f"Error downloading Excel from server: {e}")
+                    return False
+        return False
+    
+    def get_available_excel_files(self):
+        """Получить список доступных Excel файлов на сервере"""
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            response = self.network_manager.send_request({
+                'action': 'get_excel_files_list'
+            })
+            if response and response.get('status') == 'success':
+                return response.get('data', [])
+        return []
+    
+    def delete_excel_file(self, file_id):
+        """Удалить Excel файл с сервера"""
+        if self.use_network and self.network_manager and self.network_manager.is_connected:
+            response = self.network_manager.send_request({
+                'action': 'delete_excel_file',
+                'file_id': file_id
+            })
+            return response and response.get('status') == 'success'
         return False
 
 
@@ -848,7 +1312,40 @@ class ScheduleApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.settings = QSettings("MyCompany", "WorkSchedule")
-        self.db = ScheduleManager()
+        
+        # Загрузка сохраненных настроек подключения
+        saved_use_network = self.settings.value("use_network", False, type=bool)
+        saved_host = self.settings.value("server_host", "localhost")
+        saved_port = self.settings.value("server_port", 8888, type=int)
+        
+        # Диалог подключения к серверу
+        connection_dialog = ServerConnectionDialog(
+            self, 
+            current_host=saved_host,
+            current_port=saved_port,
+            current_network_mode=saved_use_network
+        )
+        
+        if connection_dialog.exec_() == QDialog.Accepted:
+            params = connection_dialog.get_connection_params()
+            try:
+                self.db = ScheduleManager(
+                    use_network=params['use_network'],
+                    server_host=params['host'],
+                    server_port=params['port']
+                )
+                # Сохраняем настройки
+                self.settings.setValue("use_network", params['use_network'])
+                self.settings.setValue("server_host", params['host'])
+                self.settings.setValue("server_port", params['port'])
+            except Exception as e:
+                QMessageBox.warning(self, "Ошибка подключения", 
+                                  f"Не удалось подключиться к серверу: {str(e)}\nБудет использован локальный режим.")
+                self.db = ScheduleManager(use_network=False)
+        else:
+            # Локальный режим по умолчанию
+            self.db = ScheduleManager(use_network=False)
+        
         self.export_folder = self.settings.value("export_folder", "")
         
         # Убраны символы, оставлены только цвета
@@ -870,12 +1367,13 @@ class ScheduleApp(QMainWindow):
         
         self.initUI()
         self.init_shortcuts()
+        self.init_menu()
         self.load_initial_data()
     
     def initUI(self):
-        self.setWindowTitle("Рабочее расписание")
+        self.setWindowTitle("Рабочее расписание" + (" [СЕТЕВОЙ РЕЖИМ]" if self.db.use_network else " [ЛОКАЛЬНЫЙ РЕЖИМ]"))
         self.setGeometry(100, 100, 1600, 800)
-        self.setWindowIcon(QIcon('schedule.ico'))
+        # self.setWindowIcon(QIcon('schedule.ico'))
         
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -1068,7 +1566,41 @@ class ScheduleApp(QMainWindow):
         self.legend_layout.addStretch()
         self.layout.addLayout(self.legend_layout)
         
-        self.statusBar().showMessage("Готово")
+        self.statusBar().showMessage("Готово" + (" [Подключено к серверу]" if self.db.use_network else " [Локальный режим]"))
+    
+    def init_menu(self):
+        """Инициализация меню"""
+        menubar = self.menuBar()
+        
+        # Меню "Файл"
+        file_menu = menubar.addMenu('Файл')
+        
+        # Действие для настройки подключения
+        connection_action = QAction('Настройки подключения...', self)
+        connection_action.triggered.connect(self.show_connection_settings)
+        file_menu.addAction(connection_action)
+        
+        file_menu.addSeparator()
+        
+        # Новые пункты для работы с общими файлами
+        if self.db.use_network:
+            shared_files_action = QAction('Общие Excel файлы...', self)
+            shared_files_action.triggered.connect(self.show_shared_files)
+            file_menu.addAction(shared_files_action)
+        
+        file_menu.addSeparator()
+        
+        exit_action = QAction('Выход', self)
+        exit_action.setShortcut('Ctrl+Q')
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        # Меню "Справка"
+        help_menu = menubar.addMenu('Справка')
+        
+        about_action = QAction('О программе', self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
     
     def init_shortcuts(self):
         for status, (icon, text, _, _) in self.status_mapping.items():
@@ -1091,6 +1623,76 @@ class ScheduleApp(QMainWindow):
             else:
                 self.month_widget2.period_combo.setCurrentIndex(0)
     
+    def show_connection_settings(self):
+        """Показать диалог настроек подключения"""
+        dialog = ServerConnectionDialog(
+            self,
+            current_host=self.db.server_host,
+            current_port=self.db.server_port,
+            current_network_mode=self.db.use_network
+        )
+        
+        if dialog.exec_() == QDialog.Accepted:
+            params = dialog.get_connection_params()
+            
+            try:
+                # Пытаемся переподключиться с новыми параметрами
+                success = self.db.reconnect(
+                    use_network=params['use_network'],
+                    server_host=params['host'],
+                    server_port=params['port']
+                )
+                
+                if success:
+                    # Сохраняем настройки
+                    self.settings.setValue("use_network", params['use_network'])
+                    self.settings.setValue("server_host", params['host'])
+                    self.settings.setValue("server_port", params['port'])
+                    
+                    # Обновляем интерфейс
+                    self.setWindowTitle("Рабочее расписание" + (" [СЕТЕВОЙ РЕЖИМ]" if self.db.use_network else " [ЛОКАЛЬНЫЙ РЕЖИМ]"))
+                    self.statusBar().showMessage("Настройки подключения обновлены" + (" [Подключено к серверу]" if self.db.use_network else " [Локальный режим]"), 3000)
+                    
+                    # Перезагружаем данные
+                    self.load_initial_data()
+                    
+                    QMessageBox.information(self, "Успех", "Настройки подключения успешно обновлены")
+                else:
+                    QMessageBox.warning(self, "Ошибка", "Не удалось подключиться к серверу с новыми параметрами")
+                    
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", f"Ошибка при изменении настроек подключения: {str(e)}")
+    
+    def show_shared_files(self):
+        """Показать диалог общих файлов"""
+        if self.db.use_network:
+            dialog = SharedFilesDialog(self.db, self)
+            dialog.exec_()
+        else:
+            QMessageBox.information(
+                self, 
+                "Информация", 
+                "Эта функция доступна только в сетевом режиме.\n"
+                "Перейдите в настройки подключения для включения сетевого режима."
+            )
+    
+    def show_about(self):
+        """Показать информацию о программе"""
+        about_text = """
+        <h3>Рабочее расписание</h3>
+        <p>Программа для управления рабочими расписаниями сотрудников.</p>
+        <p>Возможности:</p>
+        <ul>
+            <li>Создание и редактирование расписаний</li>
+            <li>Учет рабочих часов и смен</li>
+            <li>Экспорт в Excel</li>
+            <li>Сетевой режим для совместной работы</li>
+        </ul>
+        <p><b>Текущий режим:</b> {}</p>
+        """.format("СЕТЕВОЙ" if self.db.use_network else "ЛОКАЛЬНЫЙ")
+        
+        QMessageBox.about(self, "О программе", about_text)
+    
     def select_month_and_year(self):
         """Открывает диалог выбора месяца и года"""
         dialog = MonthSelectionDialog(self)
@@ -1107,36 +1709,35 @@ class ScheduleApp(QMainWindow):
 
     def create_new_period(self, period):
         """Создает новый период с выбранными сотрудниками"""
-        dialog = EmployeeSelectionDialog(self.db.employees, self)
+        employees = self.db.load_employees()
+        if not employees:
+            QMessageBox.warning(self, "Ошибка", "Нет доступных сотрудников")
+            return
+            
+        dialog = EmployeeSelectionDialog(employees, self)
         if dialog.exec_() == QDialog.Accepted:
             selected_names = dialog.get_selected_employees()
             if not selected_names:
                 QMessageBox.warning(self, "Ошибка", "Не выбрано ни одного сотрудника")
                 return
                 
-            selected_employees = [emp for emp in self.db.employees if emp["name"] in selected_names]
-            
-            try:
-                year, month = map(int, period.split('-'))
-                days_in_month = monthrange(year, month)[1]
-            except:
-                days_in_month = 31
-            
-            self.db.save_schedule(period, {
-                "employees": selected_employees,
-                "schedule": {emp["name"]: [4]*days_in_month for emp in selected_employees},  
-                "notes": {}
-            })
-            
-            # Обновляем комбо-боксы в обоих виджетах
-            self.month_widget1.load_periods()
-            self.month_widget2.load_periods()
-            
-            # Устанавливаем новый период в первый виджет
-            month_name = f"{self.month_names[month]} {year}"
-            index = self.month_widget1.period_combo.findText(month_name)
-            if index >= 0:
-                self.month_widget1.period_combo.setCurrentIndex(index)
+            if self.db.create_period(period, selected_names):
+                QMessageBox.information(self, "Успех", "Месяц создан")
+                # Обновляем комбо-боксы в обоих виджетах
+                self.month_widget1.load_periods()
+                self.month_widget2.load_periods()
+                
+                # Устанавливаем новый период в первый виджет
+                try:
+                    year, month = map(int, period.split('-'))
+                    month_name = f"{self.month_names[month]} {year}"
+                    index = self.month_widget1.period_combo.findText(month_name)
+                    if index >= 0:
+                        self.month_widget1.period_combo.setCurrentIndex(index)
+                except:
+                    pass
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось создать месяц")
     
     def add_employees_to_period(self):
         """Добавляет сотрудников в уже созданный месяц"""
@@ -1146,6 +1747,11 @@ class ScheduleApp(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Сначала выберите месяц в одном из окон")
             return
         
+        employees = self.db.load_employees()
+        if not employees:
+            QMessageBox.warning(self, "Ошибка", "Нет доступных сотрудников")
+            return
+        
         schedule_data = self.db.load_schedule(current_widget.current_period)
         if not schedule_data:
             QMessageBox.warning(self, "Ошибка", "Не удалось загрузить данные выбранного месяца")
@@ -1153,35 +1759,18 @@ class ScheduleApp(QMainWindow):
         
         current_employees = schedule_data.get("employees", [])
         
-        dialog = AddEmployeeToPeriodDialog(self.db.employees, current_employees, self)
+        dialog = AddEmployeeToPeriodDialog(employees, current_employees, self)
         if dialog.exec_() == QDialog.Accepted:
             selected_names = dialog.get_selected_employees()
             if not selected_names:
                 return
             
-            # Добавляем выбранных сотрудников
-            selected_employees = [emp for emp in self.db.employees if emp["name"] in selected_names]
-            
-            try:
-                year, month = map(int, current_widget.current_period.split('-'))
-                days_in_month = monthrange(year, month)[1]
-            except:
-                days_in_month = 31
-            
-            # Обновляем данные
-            schedule_data["employees"].extend(selected_employees)
-            
-            # Добавляем пустые расписания для новых сотрудников
-            for emp in selected_employees:
-                schedule_data["schedule"][emp["name"]] = [4] * days_in_month
-            
-            # Сохраняем обновленные данные
-            if self.db.save_schedule(current_widget.current_period, schedule_data):
-                QMessageBox.information(self, "Успех", f"Добавлено сотрудников: {len(selected_employees)}")
+            if self.db.add_employees_to_period(current_widget.current_period, selected_names):
+                QMessageBox.information(self, "Успех", f"Добавлено сотрудников: {len(selected_names)}")
                 # Перезагружаем данные
                 current_widget.load_data(current_widget.current_period)
             else:
-                QMessageBox.warning(self, "Ошибка", "Не удалось сохранить изменения")
+                QMessageBox.warning(self, "Ошибка", "Не удалось добавить сотрудников")
     
     def get_active_month_widget(self):
         """Определяет, какой виджет месяца активен (имеет фокус)"""
@@ -1306,255 +1895,300 @@ class ScheduleApp(QMainWindow):
     
     def export_to_excel(self):
         try:
-            if not self.export_folder:
-                self.select_export_folder()
-                if not self.export_folder:
-                    return
-
-            file_name = "Расписание_все_месяцы.xlsx"
-            file_path = os.path.join(self.export_folder, file_name)
-
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Расписание"
-
-            header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
-            center_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-            bold_font = Font(bold=True)
-            thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
-                            top=Side(style='thin'), bottom=Side(style='thin'))
+            # Создаем Excel файл
+            wb = self.create_excel_workbook()
             
-            status_styles = {
-                0: PatternFill(start_color="7FFF7F", end_color="7FFF7F", fill_type="solid"),
-                1: PatternFill(start_color="8080FF", end_color="8080FF", fill_type="solid"),
-                2: PatternFill(start_color="FF7777", end_color="FF7777", fill_type="solid"),
-                3: PatternFill(start_color="FFFF77", end_color="FFFF77", fill_type="solid"),
-                4: PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
-            }
-
-            # Цвета для столбцов подсчета
-            total_shifts_fill = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")  # Оранжевый
-            registry_fill = PatternFill(start_color="8080FF", end_color="8080FF", fill_type="solid")  # Синий
-            call_center_fill = PatternFill(start_color="7FFF7F", end_color="7FFF7F", fill_type="solid")  # Зеленый
-            hours_fill = PatternFill(start_color="FFD700", end_color="FFD700", fill_type="solid")  # Золотой
-
-            # ФИКСИРОВАННЫЕ ПОЗИЦИИ ДЛЯ РЕЗУЛЬТИРУЮЩИХ СТОЛБЦОВ
-            # Определяем максимальное количество рабочих дней среди всех месяцев
-            max_working_days = 0
-            periods = self.db.get_periods()
-            
-            for period in periods:
-                schedule_data = self.db.load_schedule(period)
-                if schedule_data and schedule_data.get('schedule'):
-                    try:
-                        year, month = map(int, period.split('-'))
-                        working_days_count = self.month_widget1.get_working_days_count(year, month)
-                        max_working_days = max(max_working_days, working_days_count)
-                    except:
-                        working_days_count = len(next(iter(schedule_data['schedule'].values())))
-                        max_working_days = max(max_working_days, working_days_count)
-            
-            # Если не удалось определить, устанавливаем разумный максимум
-            if max_working_days == 0:
-                max_working_days = 31
-
-            # ФИКСИРОВАННЫЕ ПОЗИЦИИ СТОЛБЦОВ
-            RESULT_COLUMNS_START = max_working_days + 2  # +1 для столбца "Сотрудник", +1 для отступа
-            RESULT_COLUMNS = {
-                "Смены": RESULT_COLUMNS_START,
-                "Рег": RESULT_COLUMNS_START + 1,
-                "КЦ": RESULT_COLUMNS_START + 2,
-                "Часы": RESULT_COLUMNS_START + 3
-            }
-
-            start_row = 1
-
-            for period in periods:
-                schedule_data = self.db.load_schedule(period)
-                if not schedule_data or not schedule_data.get('schedule'):
-                    continue
-
+            if self.db.use_network:
+                # СЕТЕВОЙ РЕЖИМ - сохраняем на сервер
+                
+                # Создаем имя файла с временной меткой
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                file_name = f"Расписание_{timestamp}.xlsx"
+                
+                # Сохраняем во временный файл
+                temp_dir = tempfile.gettempdir()
+                temp_path = os.path.join(temp_dir, file_name)
+                wb.save(temp_path)
+                
+                # Получаем имя текущего пользователя
+                current_user = getpass.getuser()
+                
+                # Загружаем на сервер
+                if self.db.save_excel_to_server(temp_path, created_by=current_user):
+                    # Также сохраняем локально если указана папка
+                    if self.export_folder:
+                        local_path = os.path.join(self.export_folder, file_name)
+                        wb.save(local_path)
+                    
+                    QMessageBox.information(
+                        self, 
+                        "Успех", 
+                        f"Файл сохранен на сервер:\n{file_name}\n\n"
+                        f"Все пользователи имеют доступ к этому файлу через меню 'Общие Excel файлы'."
+                    )
+                else:
+                    QMessageBox.warning(self, "Ошибка", "Не удалось сохранить файл на сервер")
+                
+                # Удаляем временный файл
                 try:
-                    year, month = map(int, period.split('-'))
-                    month_name = f"{self.month_names[month]} {year}"
-                    working_days_count = self.month_widget1.get_working_days_count(year, month)
-                    day_mapping = self.month_widget1.get_day_mapping(year, month)
-                    days_in_month = monthrange(year, month)[1]
+                    os.unlink(temp_path)
                 except:
-                    month_name = period
-                    working_days_count = len(next(iter(schedule_data['schedule'].values())))
-                    day_mapping = list(range(1, working_days_count + 1))
-                    days_in_month = working_days_count
-
-                employees = schedule_data.get('employees', [])
-                if not employees:
-                    continue
-
-                notes_data = schedule_data.get('notes', {})
-
-                working_counts = [0] * working_days_count
-                for emp in employees:
-                    emp_schedule = schedule_data['schedule'].get(emp["name"], [2]*days_in_month)
-                    for col, actual_day in enumerate(day_mapping):
-                        day_index = actual_day - 1
-                        if emp_schedule[day_index] in [0, 1]:
-                            working_counts[col] += 1
-
-                # Заголовок месяца - объединяем все столбцы включая результирующие
-                total_columns = max_working_days + 5  # Сотрудник + дни + 4 результирующих столбца
-                ws.cell(row=start_row, column=1, value=month_name).font = Font(bold=True, size=12)
-                ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=total_columns)
-                start_row += 1
-
-                # Заголовки столбцов
-                # Столбец "Сотрудник"
-                ws.cell(row=start_row, column=1, value="Сотрудник").fill = header_fill
-                ws.cell(row=start_row, column=1).alignment = center_alignment
-                ws.cell(row=start_row, column=1).font = bold_font
-                ws.cell(row=start_row, column=1).border = thin_border
-
-                # Заголовки дней
-                for col, actual_day in enumerate(day_mapping):
-                    try:
-                        day_of_week = (datetime(year, month, actual_day).weekday())
-                        day_name = self.day_names[day_of_week]
-                        count = working_counts[col]
-                        header_text = f"{actual_day}\n{day_name}\n({count})"
-                    except:
-                        header_text = str(actual_day)
-                    
-                    cell = ws.cell(row=start_row, column=col+2, value=header_text)
-                    cell.fill = header_fill
-                    cell.alignment = center_alignment
-                    cell.font = bold_font
-                    cell.border = thin_border
-
-                # Заголовки результирующих столбцов в ФИКСИРОВАННЫХ позициях
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"], value="Смены").fill = total_shifts_fill
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).alignment = center_alignment
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).font = bold_font
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).border = thin_border
-
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"], value="Рег").fill = registry_fill
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).alignment = center_alignment
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).font = bold_font
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).border = thin_border
-
-                ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"], value="КЦ").fill = call_center_fill
-                ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).alignment = center_alignment
-                ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).font = bold_font
-                ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).border = thin_border
-
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"], value="Часы").fill = hours_fill
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).alignment = center_alignment
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).font = bold_font
-                ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).border = thin_border
-
-                start_row += 1
-
-                # Устанавливаем ширину столбцов
-                ws.column_dimensions['A'].width = 30  # Столбец с ФИО
+                    pass
                 
-                # Столбцы с днями - фиксированная ширина
-                for col in range(2, max_working_days + 2):
-                    ws.column_dimensions[get_column_letter(col)].width = 4
-                
-                # Столбцы с результатами - фиксированная ширина в фиксированных позициях
-                ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Смены"])].width = 8
-                ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Рег"])].width = 8
-                ws.column_dimensions[get_column_letter(RESULT_COLUMNS["КЦ"])].width = 8
-                ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Часы"])].width = 8
+            else:
+                # ЛОКАЛЬНЫЙ РЕЖИМ - обычное сохранение
+                if not self.export_folder:
+                    self.select_export_folder()
+                    if not self.export_folder:
+                        return
 
-                # Данные сотрудников
-                for emp in employees:
-                    emp_name = emp["name"]
-                    ws.cell(row=start_row, column=1, value=emp_name).font = bold_font
-                    
-                    schedule = schedule_data['schedule'].get(emp["name"], [2]*days_in_month)
-                    emp_notes = notes_data.get(emp["name"], {})
-                    total_shifts = 0
-                    total_hours = 0.0
-                    call_center_days = 0
-                    registry_days = 0
-                    
-                    # Данные по дням
-                    for col, actual_day in enumerate(day_mapping):
-                        day_index = actual_day - 1
-                        status = schedule[day_index]
-                        
-                        # Подсчет для результирующих столбцов
-                        if status == 0:  # Колл-центр
-                            call_center_days += 1
-                            total_shifts += 1
-                            if str(day_index) in emp_notes:
-                                total_hours += emp_notes[str(day_index)].get('worked_hours', 12)
-                            else:
-                                total_hours += self.status_mapping[0][3]
-                        elif status == 1:  # Регистратура
-                            registry_days += 1
-                            total_shifts += 1
-                            if str(day_index) in emp_notes:
-                                total_hours += emp_notes[str(day_index)].get('worked_hours', 12)
-                            else:
-                                total_hours += self.status_mapping[1][3]
-                        
-                        # Заполняем ячейку дня
-                        note_key = str(day_index)
-                        cell = ws.cell(row=start_row, column=col+2)
-                        
-                        if note_key in emp_notes:
-                            end_time = emp_notes[note_key].get('end_time', '20:00')
-                            cell.value = end_time
-                        else:
-                            cell.value = ""
-                        
-                        cell.alignment = center_alignment
-                        cell.border = thin_border
-                        
-                        if status in status_styles:
-                            cell.fill = status_styles[status]
-                    
-                    # Результирующие данные в ФИКСИРОВАННЫХ столбцах
-                    hours, minutes = self.hours_to_hours_minutes(total_hours)
-                    hours_text = f"{hours}ч {minutes}м"
-                    
-                    # Смены
-                    cell = ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"], value=total_shifts)
-                    cell.fill = total_shifts_fill
-                    cell.alignment = center_alignment
-                    cell.font = bold_font
-                    cell.border = thin_border
-                    
-                    # Рег
-                    cell = ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"], value=registry_days)
-                    cell.fill = registry_fill
-                    cell.alignment = center_alignment
-                    cell.font = bold_font
-                    cell.border = thin_border
-                    
-                    # КЦ
-                    cell = ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"], value=call_center_days)
-                    cell.fill = call_center_fill
-                    cell.alignment = center_alignment
-                    cell.font = bold_font
-                    cell.border = thin_border
-                    
-                    # Часы
-                    cell = ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"], value=hours_text)
-                    cell.fill = hours_fill
-                    cell.alignment = center_alignment
-                    cell.font = bold_font
-                    cell.border = thin_border
-                    
-                    start_row += 1
-
-                start_row += 2
-
-            wb.save(file_path)
-            QMessageBox.information(self, "Успех", f"Файл сохранен:\n{file_path}")
+                file_name = "Расписание_все_месяцы.xlsx"
+                file_path = os.path.join(self.export_folder, file_name)
+                wb.save(file_path)
+                QMessageBox.information(self, "Успех", f"Файл сохранен:\n{file_path}")
 
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось экспортировать файл:\n{str(e)}")
+
+    def create_excel_workbook(self):
+        """Создает и заполняет Excel workbook"""
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Расписание"
+
+        header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+        center_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        bold_font = Font(bold=True)
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                        top=Side(style='thin'), bottom=Side(style='thin'))
+        
+        status_styles = {
+            0: PatternFill(start_color="7FFF7F", end_color="7FFF7F", fill_type="solid"),
+            1: PatternFill(start_color="8080FF", end_color="8080FF", fill_type="solid"),
+            2: PatternFill(start_color="FF7777", end_color="FF7777", fill_type="solid"),
+            3: PatternFill(start_color="FFFF77", end_color="FFFF77", fill_type="solid"),
+            4: PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+        }
+
+        # Цвета для столбцов подсчета
+        total_shifts_fill = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")  # Оранжевый
+        registry_fill = PatternFill(start_color="8080FF", end_color="8080FF", fill_type="solid")  # Синий
+        call_center_fill = PatternFill(start_color="7FFF7F", end_color="7FFF7F", fill_type="solid")  # Зеленый
+        hours_fill = PatternFill(start_color="FFD700", end_color="FFD700", fill_type="solid")  # Золотой
+
+        # ФИКСИРОВАННЫЕ ПОЗИЦИИ ДЛЯ РЕЗУЛЬТИРУЮЩИХ СТОЛБЦОВ
+        # Определяем максимальное количество рабочих дней среди всех месяцев
+        max_working_days = 0
+        periods = self.db.get_periods()
+        
+        for period in periods:
+            schedule_data = self.db.load_schedule(period)
+            if schedule_data and schedule_data.get('schedule'):
+                try:
+                    year, month = map(int, period.split('-'))
+                    working_days_count = self.month_widget1.get_working_days_count(year, month)
+                    max_working_days = max(max_working_days, working_days_count)
+                except:
+                    working_days_count = len(next(iter(schedule_data['schedule'].values())))
+                    max_working_days = max(max_working_days, working_days_count)
+        
+        # Если не удалось определить, устанавливаем разумный максимум
+        if max_working_days == 0:
+            max_working_days = 31
+
+        # ФИКСИРОВАННЫЕ ПОЗИЦИИ СТОЛБЦОВ
+        RESULT_COLUMNS_START = max_working_days + 2  # +1 для столбца "Сотрудник", +1 для отступа
+        RESULT_COLUMNS = {
+            "Смены": RESULT_COLUMNS_START,
+            "Рег": RESULT_COLUMNS_START + 1,
+            "КЦ": RESULT_COLUMNS_START + 2,
+            "Часы": RESULT_COLUMNS_START + 3
+        }
+
+        start_row = 1
+
+        for period in periods:
+            schedule_data = self.db.load_schedule(period)
+            if not schedule_data or not schedule_data.get('schedule'):
+                continue
+
+            try:
+                year, month = map(int, period.split('-'))
+                month_name = f"{self.month_names[month]} {year}"
+                working_days_count = self.month_widget1.get_working_days_count(year, month)
+                day_mapping = self.month_widget1.get_day_mapping(year, month)
+                days_in_month = monthrange(year, month)[1]
+            except:
+                month_name = period
+                working_days_count = len(next(iter(schedule_data['schedule'].values())))
+                day_mapping = list(range(1, working_days_count + 1))
+                days_in_month = working_days_count
+
+            employees = schedule_data.get('employees', [])
+            if not employees:
+                continue
+
+            notes_data = schedule_data.get('notes', {})
+
+            working_counts = [0] * working_days_count
+            for emp in employees:
+                emp_schedule = schedule_data['schedule'].get(emp["name"], [2]*days_in_month)
+                for col, actual_day in enumerate(day_mapping):
+                    day_index = actual_day - 1
+                    if emp_schedule[day_index] in [0, 1]:
+                        working_counts[col] += 1
+
+            # Заголовок месяца - объединяем все столбцы включая результирующие
+            total_columns = max_working_days + 5  # Сотрудник + дни + 4 результирующих столбца
+            ws.cell(row=start_row, column=1, value=month_name).font = Font(bold=True, size=12)
+            ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=total_columns)
+            start_row += 1
+
+            # Заголовки столбцов
+            # Столбец "Сотрудник"
+            ws.cell(row=start_row, column=1, value="Сотрудник").fill = header_fill
+            ws.cell(row=start_row, column=1).alignment = center_alignment
+            ws.cell(row=start_row, column=1).font = bold_font
+            ws.cell(row=start_row, column=1).border = thin_border
+
+            # Заголовки дней
+            for col, actual_day in enumerate(day_mapping):
+                try:
+                    day_of_week = (datetime(year, month, actual_day).weekday())
+                    day_name = self.day_names[day_of_week]
+                    count = working_counts[col]
+                    header_text = f"{actual_day}\n{day_name}\n({count})"
+                except:
+                    header_text = str(actual_day)
+                
+                cell = ws.cell(row=start_row, column=col+2, value=header_text)
+                cell.fill = header_fill
+                cell.alignment = center_alignment
+                cell.font = bold_font
+                cell.border = thin_border
+
+            # Заголовки результирующих столбцов в ФИКСИРОВАННЫХ позициях
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"], value="Смены").fill = total_shifts_fill
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).alignment = center_alignment
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).font = bold_font
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).border = thin_border
+
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"], value="Рег").fill = registry_fill
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).alignment = center_alignment
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).font = bold_font
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).border = thin_border
+
+            ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"], value="КЦ").fill = call_center_fill
+            ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).alignment = center_alignment
+            ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).font = bold_font
+            ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).border = thin_border
+
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"], value="Часы").fill = hours_fill
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).alignment = center_alignment
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).font = bold_font
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).border = thin_border
+
+            start_row += 1
+
+            # Устанавливаем ширину столбцов
+            ws.column_dimensions['A'].width = 30  # Столбец с ФИО
+            
+            # Столбцы с днями - фиксированная ширина
+            for col in range(2, max_working_days + 2):
+                ws.column_dimensions[get_column_letter(col)].width = 4
+            
+            # Столбцы с результатами - фиксированная ширина в фиксированных позициях
+            ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Смены"])].width = 8
+            ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Рег"])].width = 8
+            ws.column_dimensions[get_column_letter(RESULT_COLUMNS["КЦ"])].width = 8
+            ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Часы"])].width = 8
+
+            # Данные сотрудников
+            for emp in employees:
+                emp_name = emp["name"]
+                ws.cell(row=start_row, column=1, value=emp_name).font = bold_font
+                
+                schedule = schedule_data['schedule'].get(emp["name"], [2]*days_in_month)
+                emp_notes = notes_data.get(emp["name"], {})
+                total_shifts = 0
+                total_hours = 0.0
+                call_center_days = 0
+                registry_days = 0
+                
+                # Данные по дням
+                for col, actual_day in enumerate(day_mapping):
+                    day_index = actual_day - 1
+                    status = schedule[day_index]
+                    
+                    # Подсчет для результирующих столбцов
+                    if status == 0:  # Колл-центр
+                        call_center_days += 1
+                        total_shifts += 1
+                        if str(day_index) in emp_notes:
+                            total_hours += emp_notes[str(day_index)].get('worked_hours', 12)
+                        else:
+                            total_hours += self.status_mapping[0][3]
+                    elif status == 1:  # Регистратура
+                        registry_days += 1
+                        total_shifts += 1
+                        if str(day_index) in emp_notes:
+                            total_hours += emp_notes[str(day_index)].get('worked_hours', 12)
+                        else:
+                            total_hours += self.status_mapping[1][3]
+                    
+                    # Заполняем ячейку дня
+                    note_key = str(day_index)
+                    cell = ws.cell(row=start_row, column=col+2)
+                    
+                    if note_key in emp_notes:
+                        end_time = emp_notes[note_key].get('end_time', '20:00')
+                        cell.value = end_time
+                    else:
+                        cell.value = ""
+                    
+                    cell.alignment = center_alignment
+                    cell.border = thin_border
+                    
+                    if status in status_styles:
+                        cell.fill = status_styles[status]
+                
+                # Результирующие данные в ФИКСИРОВАННЫХ столбцах
+                hours, minutes = self.hours_to_hours_minutes(total_hours)
+                hours_text = f"{hours}ч {minutes}м"
+                
+                # Смены
+                cell = ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"], value=total_shifts)
+                cell.fill = total_shifts_fill
+                cell.alignment = center_alignment
+                cell.font = bold_font
+                cell.border = thin_border
+                
+                # Рег
+                cell = ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"], value=registry_days)
+                cell.fill = registry_fill
+                cell.alignment = center_alignment
+                cell.font = bold_font
+                cell.border = thin_border
+                
+                # КЦ
+                cell = ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"], value=call_center_days)
+                cell.fill = call_center_fill
+                cell.alignment = center_alignment
+                cell.font = bold_font
+                cell.border = thin_border
+                
+                # Часы
+                cell = ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"], value=hours_text)
+                cell.fill = hours_fill
+                cell.alignment = center_alignment
+                cell.font = bold_font
+                cell.border = thin_border
+                
+                start_row += 1
+
+            start_row += 2
+
+        return wb
 
     def hours_to_hours_minutes(self, total_hours):
         """Конвертирует дробное количество часов в часы и минуты"""
