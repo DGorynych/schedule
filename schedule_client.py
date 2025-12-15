@@ -740,54 +740,49 @@ class MonthWidget(QWidget):
     def initUI(self):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(0)  # Уменьшил расстояние между элементами
         self.setLayout(layout)
         
         # Верхняя панель с выбором месяца
         top_layout = QHBoxLayout()
-        top_layout.setContentsMargins(5, 2, 5, 2)
+        top_layout.setContentsMargins(2, 2, 2, 2)  # Уменьшил отступы
         
         self.period_combo = QComboBox()
-        
-        # УВЕЛИЧИВАЕМ ШИРИНУ COMBOBOX
-        self.period_combo.setMinimumWidth(300)
-        self.period_combo.setFixedHeight(28)
-        
-        # Стили для комбобокса
+        self.period_combo.setMinimumWidth(200)  # Уменьшил ширину
+        self.period_combo.setFixedHeight(24)    # Уменьшил высоту
         self.period_combo.setStyleSheet("""
             QComboBox {
-                min-width: 300px;
-                height: 28px;
+                min-width: 120px;
+                height: 24px;
                 font-size: 12px;
-                padding: 4px;
+                padding: 2px;
                 border: 1px solid #ccc;
-                border-radius: 4px;
+                border-radius: 3px;
             }
             QComboBox::drop-down {
-                width: 25px;
+                width: 20px;
                 border: none;
             }
             QComboBox QAbstractItemView {
-                min-width: 350px;
+                min-width: 120px;
                 font-size: 12px;
             }
         """)
         
         self.period_combo.currentIndexChanged.connect(self.period_changed)
         
-        month_label = QLabel("Месяц:")
+        month_label = QLabel()
         month_label_font = month_label.font()
-        month_label_font.setPointSize(11)
+        month_label_font.setPointSize(12)  # Уменьшил размер шрифта
         month_label.setFont(month_label_font)
         
         top_layout.addWidget(month_label)
         top_layout.addWidget(self.period_combo)
-        
         top_layout.addStretch()
         layout.addLayout(top_layout)
         
         # Таблица
-        self.table = NoteTableWidget(self)  # Передаем self как parent
+        self.table = NoteTableWidget(self)
         self.setup_table(self.table)
         layout.addWidget(self.table)
     
@@ -800,16 +795,18 @@ class MonthWidget(QWidget):
         table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         
-        table.verticalHeader().setDefaultSectionSize(20)
+        # Уменьшил высоту строк
+        table.verticalHeader().setDefaultSectionSize(22)
         
+        # Уменьшил размеры шрифтов заголовков
         font = table.horizontalHeader().font()
         font.setBold(True)
-        font.setPointSize(12)
+        font.setPointSize(11)  # Уменьшил с 12 до 9
         table.horizontalHeader().setFont(font)
         
         font = table.verticalHeader().font()
         font.setBold(True)
-        font.setPointSize(12)
+        font.setPointSize(11)  # Уменьшил с 12 до 9
         table.verticalHeader().setFont(font)
     
     def load_periods(self):
@@ -834,28 +831,6 @@ class MonthWidget(QWidget):
             period = self.period_combo.itemData(index)
             self.current_period = period
             self.load_data(period)
-    
-    def get_working_days_count(self, year, month):
-        """Возвращает количество рабочих дней в месяце (без воскресений)"""
-        days_in_month = monthrange(year, month)[1]
-        working_days = 0
-        
-        for day in range(1, days_in_month + 1):
-            if datetime(year, month, day).weekday() != 6:
-                working_days += 1
-                
-        return working_days
-    
-    def get_day_mapping(self, year, month):
-        """Создает маппинг между номером столбца и фактическим днем месяца (исключая воскресенья)"""
-        days_in_month = monthrange(year, month)[1]
-        day_mapping = []
-        
-        for day in range(1, days_in_month + 1):
-            if datetime(year, month, day).weekday() != 6:
-                day_mapping.append(day)
-                
-        return day_mapping
     
     def load_data(self, period):
         if not period:
@@ -883,16 +858,23 @@ class MonthWidget(QWidget):
         
         try:
             year, month = map(int, period.split('-'))
-            working_days_count = self.get_working_days_count(year, month)
-            day_mapping = self.get_day_mapping(year, month)
             days_in_month = monthrange(year, month)[1]
+            day_mapping = []  # Массив для хранения всех дней
+            is_sunday_mapping = []  # Массив для хранения информации о воскресеньях
+            
+            for day in range(1, days_in_month + 1):
+                day_mapping.append(day)
+                # Определяем, является ли день воскресеньем
+                is_sunday = datetime(year, month, day).weekday() == 6
+                is_sunday_mapping.append(is_sunday)
+                
         except:
             days_in_month = 31
-            working_days_count = days_in_month
             day_mapping = list(range(1, days_in_month + 1))
+            is_sunday_mapping = [False] * days_in_month
         
         self.table.setRowCount(len(employees_in_period))
-        self.table.setColumnCount(working_days_count + 4)
+        self.table.setColumnCount(days_in_month + 4)  # +4 для итоговых столбцов
         
         self.table.setVerticalHeaderLabels([emp["name"] for emp in employees_in_period])
         
@@ -905,7 +887,14 @@ class MonthWidget(QWidget):
             
             for col, actual_day in enumerate(day_mapping):
                 day_index = actual_day - 1
-                day_status = emp_schedule[day_index]
+                is_sunday = is_sunday_mapping[day_index]
+                
+                # Для воскресенья всегда используем статус "Не работает"
+                if is_sunday:
+                    day_status = 2  # Статус "Не работает"
+                else:
+                    day_status = emp_schedule[day_index]
+                    
                 icon, _, bg_color, _ = self.parent_app.status_mapping.get(day_status, ("", "Пусто", QColor(Qt.white), 0))
                 
                 note_key = str(day_index)
@@ -917,7 +906,7 @@ class MonthWidget(QWidget):
                 item.setBackground(bg_color)
                 item.setForeground(Qt.black)
                 
-                if has_note:
+                if has_note and not is_sunday:  # Примечания не показываем для воскресений
                     end_time = note_data.get('end_time', '20:00')
                     item.setText(end_time)
                     item.setData(Qt.UserRole, True)
@@ -930,20 +919,21 @@ class MonthWidget(QWidget):
         self.table.is_loading = False
         self.update_counters()
         
-        fixed_day_width = 25
+        fixed_day_width = 22  # Уменьшил с 25 до 22
         
-        for col in range(working_days_count):
+        for col in range(days_in_month):
             self.table.setColumnWidth(col, fixed_day_width)
         
-        self.table.setColumnWidth(working_days_count, 70)
-        self.table.setColumnWidth(working_days_count + 1, 70)
-        self.table.setColumnWidth(working_days_count + 2, 70)
-        self.table.setColumnWidth(working_days_count + 3, 80)
+        # Уменьшил ширину итоговых столбцов
+        self.table.setColumnWidth(days_in_month, 60)      # Было 70
+        self.table.setColumnWidth(days_in_month + 1, 60)  # Было 70
+        self.table.setColumnWidth(days_in_month + 2, 60)  # Было 70
+        self.table.setColumnWidth(days_in_month + 3, 60)  # Было 80
         
-        for col in range(working_days_count + 4):
+        for col in range(days_in_month + 4):
             self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
-        
-        self.table.verticalHeader().setDefaultSectionSize(30)
+    
+        self.table.verticalHeader().setDefaultSectionSize(22)  # Уменьшил с 30 до 22
         self.table.viewport().update()
 
     def hours_to_hours_minutes(self, total_hours):
@@ -963,17 +953,13 @@ class MonthWidget(QWidget):
         
         try:
             year, month = map(int, self.current_period.split('-'))
-            working_days_count = self.get_working_days_count(year, month)
-            day_mapping = self.get_day_mapping(year, month)
             days_in_month = monthrange(year, month)[1]
+            day_mapping = list(range(1, days_in_month + 1))
         except:
-            working_days_count = self.table.columnCount() - 4
-            day_mapping = list(range(1, working_days_count + 1))
-            days_in_month = working_days_count
+            days_in_month = self.table.columnCount() - 4
+            day_mapping = list(range(1, days_in_month + 1))
         
-        working_counts = [0] * working_days_count
-        call_center_counts = [0] * working_days_count
-        registry_counts = [0] * working_days_count
+        working_counts = [0] * days_in_month
         
         for row in range(self.table.rowCount()):
             total_shifts = 0
@@ -981,16 +967,16 @@ class MonthWidget(QWidget):
             registry_days = 0
             total_hours = 0.0
             
-            for col in range(working_days_count):
+            for col in range(days_in_month):
                 item = self.table.item(row, col)
                 if item:
                     bg_color = item.background().color()
                     
+                    # Определяем статус по цвету
                     if bg_color == self.parent_app.status_mapping[0][2]:
                         call_center_days += 1
                         total_shifts += 1
                         working_counts[col] += 1
-                        call_center_counts[col] += 1
                         
                         if isinstance(item, NoteItem) and item.has_note:
                             total_hours += item.note_data.get('worked_hours', 12)
@@ -1001,7 +987,6 @@ class MonthWidget(QWidget):
                         registry_days += 1
                         total_shifts += 1
                         working_counts[col] += 1
-                        registry_counts[col] += 1
                         
                         if isinstance(item, NoteItem) and item.has_note:
                             total_hours += item.note_data.get('worked_hours', 12)
@@ -1010,55 +995,64 @@ class MonthWidget(QWidget):
             
             hours, minutes = self.hours_to_hours_minutes(total_hours)
             
-            if working_days_count < self.table.columnCount():
-                total_shifts_item = self.table.item(row, working_days_count)
+            # Заполняем итоговые столбцы
+            if days_in_month < self.table.columnCount():
+                total_shifts_item = self.table.item(row, days_in_month)
                 if not total_shifts_item:
                     total_shifts_item = QTableWidgetItem()
                     total_shifts_item.setTextAlignment(Qt.AlignCenter)
                     total_shifts_item.setFlags(total_shifts_item.flags() ^ Qt.ItemIsEditable)
-                    total_shifts_item.setFont(QFont("Arial", 11, QFont.Bold))
-                    self.table.setItem(row, working_days_count, total_shifts_item)
+                    total_shifts_item.setFont(QFont("Arial", 9, QFont.Bold))  # Уменьшил с 11 до 9
+                    self.table.setItem(row, days_in_month, total_shifts_item)
                 total_shifts_item.setText(f"{total_shifts}")
             
-            if working_days_count + 1 < self.table.columnCount():
-                registry_item = self.table.item(row, working_days_count + 1)
+            if days_in_month + 1 < self.table.columnCount():
+                registry_item = self.table.item(row, days_in_month + 1)
                 if not registry_item:
                     registry_item = QTableWidgetItem()
                     registry_item.setTextAlignment(Qt.AlignCenter)
                     registry_item.setFlags(registry_item.flags() ^ Qt.ItemIsEditable)
-                    registry_item.setFont(QFont("Arial", 11, QFont.Bold))
-                    self.table.setItem(row, working_days_count + 1, registry_item)
+                    registry_item.setFont(QFont("Arial", 9, QFont.Bold))  # Уменьшил с 11 до 9
+                    self.table.setItem(row, days_in_month + 1, registry_item)
                 registry_item.setText(f"{registry_days}")
             
-            if working_days_count + 2 < self.table.columnCount():
-                call_center_item = self.table.item(row, working_days_count + 2)
+            if days_in_month + 2 < self.table.columnCount():
+                call_center_item = self.table.item(row, days_in_month + 2)
                 if not call_center_item:
                     call_center_item = QTableWidgetItem()
                     call_center_item.setTextAlignment(Qt.AlignCenter)
                     call_center_item.setFlags(call_center_item.flags() ^ Qt.ItemIsEditable)
-                    call_center_item.setFont(QFont("Arial", 11, QFont.Bold))
-                    self.table.setItem(row, working_days_count + 2, call_center_item)
+                    call_center_item.setFont(QFont("Arial", 9, QFont.Bold))  # Уменьшил с 11 до 9
+                    self.table.setItem(row, days_in_month + 2, call_center_item)
                 call_center_item.setText(f"{call_center_days}")
             
-            if working_days_count + 3 < self.table.columnCount():
-                hours_item = self.table.item(row, working_days_count + 3)
+            if days_in_month + 3 < self.table.columnCount():
+                hours_item = self.table.item(row, days_in_month + 3)
                 if not hours_item:
                     hours_item = QTableWidgetItem()
                     hours_item.setTextAlignment(Qt.AlignCenter)
                     hours_item.setFlags(hours_item.flags() ^ Qt.ItemIsEditable)
-                    hours_item.setFont(QFont("Arial", 10, QFont.Bold))
-                    self.table.setItem(row, working_days_count + 3, hours_item)
+                    hours_item.setFont(QFont("Arial", 8, QFont.Bold))  # Уменьшил с 10 до 8
+                    self.table.setItem(row, days_in_month + 3, hours_item)
                 
                 hours_text = f"{hours}ч {minutes}м"
                 hours_item.setText(hours_text)
         
+        # Обновляем заголовки столбцов
         day_headers = []
         for col, actual_day in enumerate(day_mapping):
             try:
-                day_of_week = (datetime(year, month, actual_day).weekday())
+                day_of_week = datetime(year, month, actual_day).weekday()
                 day_name = self.parent_app.day_names[day_of_week]
-                count = working_counts[col]
+                
+                # Определяем цвет для воскресенья
+                if day_of_week == 6:  # Воскресенье
+                    count = 0  # В воскресенье никто не работает
+                else:
+                    count = working_counts[col]
+                
                 day_headers.append(f"{actual_day}\n{day_name}\n({count})")
+                
             except:
                 day_headers.append(str(actual_day))
         
@@ -1087,7 +1081,17 @@ class MonthWidget(QWidget):
             index = selected[0]
             if index.column() < table.columnCount() - 4:
                 item = table.item(index.row(), index.column())
-                if item and item.background().color() in [self.parent_app.status_mapping[0][2], self.parent_app.status_mapping[1][2]]:
+                
+                # Проверяем, является ли это воскресеньем
+                try:
+                    year, month = map(int, self.current_period.split('-'))
+                    actual_day = index.column() + 1
+                    is_sunday = datetime(year, month, actual_day).weekday() == 6
+                except:
+                    is_sunday = False
+                
+                # Не позволяем добавлять примечания к воскресеньям
+                if not is_sunday and item and item.background().color() in [self.parent_app.status_mapping[0][2], self.parent_app.status_mapping[1][2]]:
                     if isinstance(item, NoteItem) and item.has_note:
                         remove_note_action = QAction("Удалить примечание", self)
                         remove_note_action.triggered.connect(lambda: self.remove_note(index))
@@ -1224,6 +1228,18 @@ class MonthWidget(QWidget):
         
         for index in selected:
             if index.column() >= self.table.columnCount() - 4:
+                continue
+            
+            # Проверяем, является ли это воскресеньем
+            try:
+                year, month = map(int, self.current_period.split('-'))
+                actual_day = index.column() + 1
+                is_sunday = datetime(year, month, actual_day).weekday() == 6
+            except:
+                is_sunday = False
+            
+            # Не позволяем менять статус воскресеньям
+            if is_sunday:
                 continue
             
             item = self.table.item(index.row(), index.column())
@@ -1408,7 +1424,7 @@ class ScheduleApp(QMainWindow):
         }
         
         self.day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        
+
         self.initUI()
         self.init_shortcuts()
         
@@ -1417,7 +1433,7 @@ class ScheduleApp(QMainWindow):
     
     def initUI(self):
         self.setWindowTitle("Рабочее расписание")
-        self.setGeometry(100, 100, 1600, 800)
+        #self.setGeometry(100, 100, 1400, 700)  #размер окна
         self.setWindowIcon(QIcon('schedule.ico'))
         
         self.central_widget = QWidget()
@@ -1459,8 +1475,8 @@ class ScheduleApp(QMainWindow):
         # Кнопка Новый месяц
         self.new_month_btn = QPushButton("Новый месяц")
         self.new_month_btn.clicked.connect(self.select_month_and_year)
-        self.new_month_btn.setFixedHeight(35)
-        self.new_month_btn.setFixedWidth(120)
+        self.new_month_btn.setFixedHeight(35)  # Было 35
+        self.new_month_btn.setFixedWidth(120)  # Было 120
         self.new_month_btn.setStyleSheet("""
             QPushButton {
                 background: #06B6D4;
@@ -1483,7 +1499,7 @@ class ScheduleApp(QMainWindow):
         self.add_employee_btn = QPushButton("Новый сотрудник")
         self.add_employee_btn.clicked.connect(self.add_employee_dialog)
         self.add_employee_btn.setFixedHeight(30)
-        self.add_employee_btn.setFixedWidth(140)
+        self.add_employee_btn.setFixedWidth(140)  
         self.add_employee_btn.setStyleSheet("""
             QPushButton {
                 background-color: #808080;
@@ -1505,8 +1521,8 @@ class ScheduleApp(QMainWindow):
         # Кнопка для добавления сотрудников в текущий период
         self.add_to_period_btn = QPushButton("Добавить в месяц")
         self.add_to_period_btn.clicked.connect(self.add_employees_to_period)
-        self.add_to_period_btn.setFixedHeight(30)
-        self.add_to_period_btn.setFixedWidth(140)
+        self.add_to_period_btn.setFixedHeight(30) 
+        self.add_to_period_btn.setFixedWidth(140)  
         self.add_to_period_btn.setStyleSheet("""
             QPushButton {
                 background-color: #808080;
@@ -1532,8 +1548,8 @@ class ScheduleApp(QMainWindow):
         # Кнопка Открыть документ
         self.open_doc_btn = QPushButton("Открыть документ")
         self.open_doc_btn.clicked.connect(self.open_document)
-        self.open_doc_btn.setFixedHeight(30)
-        self.open_doc_btn.setFixedWidth(140)
+        self.open_doc_btn.setFixedHeight(30) 
+        self.open_doc_btn.setFixedWidth(140)  
         self.open_doc_btn.setStyleSheet("""
             QPushButton {
                 background-color: #808080;
@@ -1618,8 +1634,8 @@ class ScheduleApp(QMainWindow):
         self.splitter.addWidget(self.month_widget1)
         self.splitter.addWidget(self.month_widget2)
         
-        # Устанавливаем компактные размеры
-        self.splitter.setSizes([350, 350])
+        # Уменьшил высоту сплиттера
+        self.splitter.setSizes([300, 300])  # Было [350, 350]
         
         # Легенда статусов
         self.legend_layout = QHBoxLayout()
@@ -1628,13 +1644,14 @@ class ScheduleApp(QMainWindow):
         
         for status, (icon, text, color, _) in self.status_mapping.items():
             legend_item = QHBoxLayout()
-            legend_item.setSpacing(3)
+            legend_item.setSpacing(2)
             color_label = QLabel("")
-            color_label.setStyleSheet(f"font-size: 14px; background: {color.name()}; padding: 0px;")
+            color_label.setStyleSheet(f"font-size: 12px; background: {color.name()}; padding: 0px;")
+            color_label.setFixedSize(12, 12)  #размер
             legend_item.addWidget(color_label)
             
             text_label = QLabel(text)
-            text_label.setStyleSheet("padding: 0px; font-size: 10px;")
+            text_label.setStyleSheet("padding: 0px; font-size: 12px;") 
             legend_item.addWidget(text_label)
             self.legend_layout.addLayout(legend_item)
         
@@ -1732,6 +1749,7 @@ class ScheduleApp(QMainWindow):
                 self.month_widget2.period_combo.setCurrentIndex(len(periods) - 1)
             else:
                 self.month_widget2.period_combo.setCurrentIndex(0)
+    
     def refresh_data(self):
         """Обновление данных с сервера"""
         if self.network_manager.connected:
@@ -1880,11 +1898,9 @@ class ScheduleApp(QMainWindow):
         try:
             year, month = map(int, widget.current_period.split('-'))
             days_in_month = monthrange(year, month)[1]
-            working_days_count = widget.get_working_days_count(year, month)
-            day_mapping = widget.get_day_mapping(year, month)
+            day_mapping = list(range(1, days_in_month + 1))
         except:
             days_in_month = widget.table.columnCount() - 4
-            working_days_count = days_in_month
             day_mapping = list(range(1, days_in_month + 1))
         
         schedule_data["schedule"] = {}
@@ -1897,18 +1913,31 @@ class ScheduleApp(QMainWindow):
             
             for col, actual_day in enumerate(day_mapping):
                 day_index = actual_day - 1
+                
+                # Проверяем, является ли это воскресеньем
+                try:
+                    is_sunday = datetime(year, month, actual_day).weekday() == 6
+                except:
+                    is_sunday = False
+                
                 item = widget.table.item(row, col)
                 if item and isinstance(item, NoteItem):
                     bg_color = item.background().color()
-                    if bg_color == QColor(Qt.white):
+                    
+                    # Для воскресенья всегда статус "Не работает"
+                    if is_sunday:
+                        status = 2  # Статус "Не работает"
+                    elif bg_color == QColor(Qt.white):
                         status = 4
                     else:
                         status = next((k for k, v in self.status_mapping.items() if v[2] == bg_color), 4)
+                    
                     full_schedule[day_index] = status
                     
-                    if item.has_note:
+                    # Сохраняем примечания только для рабочих дней
+                    if not is_sunday and item.has_note:
                         notes[str(day_index)] = item.note_data
-            
+              
             schedule_data["schedule"][emp_name] = full_schedule
             if notes:
                 schedule_data["notes"][emp_name] = notes
@@ -1992,6 +2021,7 @@ class ScheduleApp(QMainWindow):
             ws.title = "Расписание"
 
             header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+            sunday_header_fill = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")  # Красный для воскресений
             center_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             bold_font = Font(bold=True)
             thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
@@ -2025,11 +2055,11 @@ class ScheduleApp(QMainWindow):
                     has_data = True
                     try:
                         year, month = map(int, period.split('-'))
-                        working_days_count = self.month_widget1.get_working_days_count(year, month)
-                        max_working_days = max(max_working_days, working_days_count)
+                        days_in_month = monthrange(year, month)[1]
+                        max_working_days = max(max_working_days, days_in_month)
                     except:
-                        working_days_count = len(next(iter(schedule_data['schedule'].values())))
-                        max_working_days = max(max_working_days, working_days_count)
+                        days_in_month = len(next(iter(schedule_data['schedule'].values())))
+                        max_working_days = max(max_working_days, days_in_month)
             
             if not has_data:
                 self.statusBar().showMessage("Нет данных для экспорта", 3000)
@@ -2056,14 +2086,12 @@ class ScheduleApp(QMainWindow):
                 try:
                     year, month = map(int, period.split('-'))
                     month_name = f"{self.month_names[month]} {year}"
-                    working_days_count = self.month_widget1.get_working_days_count(year, month)
-                    day_mapping = self.month_widget1.get_day_mapping(year, month)
                     days_in_month = monthrange(year, month)[1]
+                    day_mapping = list(range(1, days_in_month + 1))
                 except:
                     month_name = period
-                    working_days_count = len(next(iter(schedule_data['schedule'].values())))
-                    day_mapping = list(range(1, working_days_count + 1))
-                    days_in_month = working_days_count
+                    days_in_month = len(next(iter(schedule_data['schedule'].values())))
+                    day_mapping = list(range(1, days_in_month + 1))
 
                 employees = schedule_data.get('employees', [])
                 if not employees:
@@ -2071,7 +2099,7 @@ class ScheduleApp(QMainWindow):
 
                 notes_data = schedule_data.get('notes', {})
 
-                working_counts = [0] * working_days_count
+                working_counts = [0] * days_in_month
                 for emp in employees:
                     emp_schedule = schedule_data['schedule'].get(emp["name"], [2]*days_in_month)
                     for col, actual_day in enumerate(day_mapping):
@@ -2092,15 +2120,24 @@ class ScheduleApp(QMainWindow):
 
                 for col, actual_day in enumerate(day_mapping):
                     try:
-                        day_of_week = (datetime(year, month, actual_day).weekday())
+                        day_of_week = datetime(year, month, actual_day).weekday()
                         day_name = self.day_names[day_of_week]
-                        count = working_counts[col]
+                        is_sunday = day_of_week == 6
+                        
+                        if is_sunday:
+                            count = 0  # В воскресенье никто не работает
+                            header_fill_type = sunday_header_fill
+                        else:
+                            count = working_counts[col]
+                            header_fill_type = header_fill
+                        
                         header_text = f"{actual_day}\n{day_name}\n({count})"
                     except:
                         header_text = str(actual_day)
+                        header_fill_type = header_fill
                     
                     cell = ws.cell(row=start_row, column=col+2, value=header_text)
-                    cell.fill = header_fill
+                    cell.fill = header_fill_type
                     cell.alignment = center_alignment
                     cell.font = bold_font
                     cell.border = thin_border
@@ -2170,7 +2207,14 @@ class ScheduleApp(QMainWindow):
                         
                         cell = ws.cell(row=start_row, column=col+2)
                         
-                        if str(day_index) in emp_notes:
+                        # Проверяем, является ли это воскресеньем
+                        try:
+                            is_sunday = datetime(year, month, actual_day).weekday() == 6
+                        except:
+                            is_sunday = False
+                        
+                        # Показываем время окончания только для рабочих дней
+                        if not is_sunday and str(day_index) in emp_notes:
                             end_time = emp_notes[str(day_index)].get('end_time', '20:00')
                             cell.value = end_time
                         else:

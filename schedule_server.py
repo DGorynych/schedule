@@ -114,6 +114,7 @@ class ProcessLock:
         except:
             return False
 
+
 class SingleInstance:
     """Класс для обеспечения единственного экземпляра приложения"""
     
@@ -836,7 +837,6 @@ class ServerWindow(QMainWindow):
             tray_menu = self.tray_icon.contextMenu()
             tray_menu.actions()[1].setEnabled(False)  # Запустить сервер
             tray_menu.actions()[2].setEnabled(True)   # Остановить сервер
-    
     def stop_server(self):
         """Остановка сервера"""
         if self.server:
