@@ -12,7 +12,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget, QTableWidg
                              QAction, QComboBox, QInputDialog, QDialog, 
                              QVBoxLayout, QCheckBox, QScrollArea, QDialogButtonBox,
                              QShortcut, QTimeEdit, QFormLayout, QGridLayout, QSplitter,
-                             QLineEdit, QMenuBar)
+                             QLineEdit, QMenuBar, QTabWidget, QListWidget, QListWidgetItem,
+                             QGroupBox, QSlider)
 from PyQt5.QtCore import Qt, QSettings, QThread, pyqtSignal, QTime, QDate, QTimer
 from PyQt5.QtGui import QColor, QKeySequence, QFont, QPainter, QIcon
 from calendar import monthrange
@@ -138,34 +139,43 @@ class ScheduleManager:
         self.local_db = "local_schedule.db"
         self.init_local_db()
         self._cache = {}
-        self._employees = []  # Кэш сотрудников
-        self._periods = []    # Кэш периодов
+        self._employees = []  # Кэш сотрудников (только активные)
+        self._all_employees = []  # Кэш всех сотрудников (активные + удаленные)
+        self._periods_cache = []    # Кэш периодов (переименуем для ясности)
+    
+    @property
+    def periods(self):
+        """Свойство для периодов"""
+        if not self._periods_cache:
+            self._periods_cache = self.get_periods()
+        return self._periods_cache
     
     @property
     def employees(self):
-        """Свойство для совместимости со старым кодом"""
+        """Свойство для совместимости со старым кодом - возвращает только активных сотрудников"""
         if not self._employees:
             self._employees = self.load_employees()
         return self._employees
     
     @property
-    def periods(self):
-        """Свойство для периодов"""
-        if not self._periods:
-            self._periods = self.get_periods()
-        return self._periods
+    def all_employees(self):
+        """Свойство для получения всех сотрудников (активных + удаленных)"""
+        if not self._all_employees:
+            self._all_employees = self.load_all_employees()
+        return self._all_employees
     
     def init_local_db(self):
         """Инициализация локальной SQLite базы данных"""
         conn = sqlite3.connect(self.local_db)
         cursor = conn.cursor()
         
-        # Таблица сотрудников
+        # Таблица сотрудников (добавляем поле is_deleted)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS employees (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL,
                 position TEXT,
+                is_deleted INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -194,10 +204,17 @@ class ScheduleManager:
             )
         ''')
         
+        # Добавляем колонку is_deleted, если ее нет
+        try:
+            cursor.execute("SELECT is_deleted FROM employees LIMIT 1")
+        except sqlite3.OperationalError:
+            # Колонки нет, добавляем
+            cursor.execute("ALTER TABLE employees ADD COLUMN is_deleted INTEGER DEFAULT 0")
+        
         conn.commit()
         conn.close()
     
-    def load_employees(self):
+    def load_employees(self, include_deleted=False):
         """Загрузка сотрудников с сервера или из локальной БД"""
         # Пытаемся загрузить с сервера
         response = self.network_manager.send_request({'action': 'get_employees'})
@@ -205,13 +222,13 @@ class ScheduleManager:
         if response.get('status') == 'success':
             # Сохраняем в локальную БД
             self._save_employees_to_local(response['data'])
-            self._employees = response['data']  # Обновляем кэш
-            return response['data']
+            # Обновляем кэши
+            self._update_employee_caches()
+            return self._get_employees_from_cache(include_deleted)
         else:
             # Загрузка из локальной БД
-            employees = self._load_employees_from_local()
-            self._employees = employees  # Обновляем кэш
-            return employees
+            self._update_employee_caches()
+            return self._get_employees_from_cache(include_deleted)
     
     def _save_employees_to_local(self, employees):
         """Сохранение сотрудников в локальную БД"""
@@ -219,11 +236,21 @@ class ScheduleManager:
         cursor = conn.cursor()
         
         try:
+            # Проверяем наличие колонки is_deleted
+            cursor.execute("PRAGMA table_info(employees)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
             for emp in employees:
-                cursor.execute('''
-                    INSERT OR REPLACE INTO employees (name, position) 
-                    VALUES (?, ?)
-                ''', (emp['name'], emp.get('position', '')))
+                if 'is_deleted' in columns:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO employees (name, is_deleted) 
+                        VALUES (?, COALESCE((SELECT is_deleted FROM employees WHERE name = ?), 0))
+                    ''', (emp['name'], emp['name']))
+                else:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO employees (name) 
+                        VALUES (?)
+                    ''', (emp['name'],))
             
             conn.commit()
         except Exception as e:
@@ -231,20 +258,46 @@ class ScheduleManager:
         finally:
             conn.close()
     
-    def _load_employees_from_local(self):
-        """Загрузка сотрудников из локальной БД"""
+    def _update_employee_caches(self):
+        """Обновление кэшей сотрудников"""
         conn = sqlite3.connect(self.local_db)
         cursor = conn.cursor()
         
         try:
-            cursor.execute("SELECT name, position FROM employees")
-            employees = [{'name': row[0], 'position': row[1]} for row in cursor.fetchall()]
-            return employees
+            # Проверяем наличие колонки is_deleted
+            cursor.execute("PRAGMA table_info(employees)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            # Вктивные сотрудники
+            if 'is_deleted' in columns:
+                cursor.execute("SELECT name, position FROM employees WHERE is_deleted = 0")
+            else:
+                cursor.execute("SELECT name, position FROM employees")
+            
+            self._employees = [{'name': row[0], 'position': row[1]} for row in cursor.fetchall()]
+            
+            # Все сотрудники
+            if 'is_deleted' in columns:
+                cursor.execute("SELECT name, position, is_deleted FROM employees")
+                self._all_employees = [{'name': row[0], 'position': row[1], 'is_deleted': row[2]} for row in cursor.fetchall()]
+            else:
+                cursor.execute("SELECT name, position FROM employees")
+                self._all_employees = [{'name': row[0], 'position': row[1], 'is_deleted': 0} for row in cursor.fetchall()]
         except Exception as e:
-            print(f"Ошибка загрузки сотрудников: {e}")
-            return []
+            print(f"Ошибка обновления кэшей сотрудников: {e}")
         finally:
             conn.close()
+    
+    def _get_employees_from_cache(self, include_deleted=False):
+        """Получение сотрудников из кэша"""
+        if include_deleted:
+            return self._all_employees
+        else:
+            return self._employees
+    
+    def load_all_employees(self):
+        """Загрузка всех сотрудников (включая удаленных)"""
+        return self.load_employees(include_deleted=True)
     
     def get_periods(self):
         """Получение периодов с сервера или из локальной БД"""
@@ -253,12 +306,12 @@ class ScheduleManager:
         if response.get('status') == 'success':
             # Сохраняем в локальную БД
             self._save_periods_to_local(response['data'])
-            self._periods = response['data']  # Обновляем кэш
+            self._periods_cache = response['data']  # Обновляем кэш
             return response['data']
         else:
             # Загрузка из локальной БД
             periods = self._load_periods_from_local()
-            self._periods = periods  # Обновляем кэш
+            self._periods_cache = periods  # Обновляем кэш
             return periods
     
     def _save_periods_to_local(self, periods):
@@ -371,11 +424,26 @@ class ScheduleManager:
             
             period_id = result[0]
             
-            # Получаем сотрудников периода
-            cursor.execute('''
-                SELECT DISTINCT employee_name FROM schedules 
-                WHERE period_id = ? ORDER BY employee_name
-            ''', (period_id,))
+            # Получаем сотрудников периода (только активных)
+            # Проверяем наличие колонки is_deleted в таблице employees
+            cursor.execute("PRAGMA table_info(employees)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'is_deleted' in columns:
+                cursor.execute('''
+                    SELECT DISTINCT s.employee_name 
+                    FROM schedules s
+                    LEFT JOIN employees e ON s.employee_name = e.name
+                    WHERE s.period_id = ? AND (e.is_deleted = 0 OR e.is_deleted IS NULL)
+                    ORDER BY s.employee_name
+                ''', (period_id,))
+            else:
+                # Если колонки нет, получаем всех сотрудников
+                cursor.execute('''
+                    SELECT DISTINCT employee_name FROM schedules 
+                    WHERE period_id = ? ORDER BY employee_name
+                ''', (period_id,))
+            
             employees = [{'name': row[0]} for row in cursor.fetchall()]
             
             if not employees:
@@ -441,19 +509,31 @@ class ScheduleManager:
     def add_employee(self, name):
         """Добавление сотрудника"""
         # Проверяем локально
-        employees = self._load_employees_from_local()
-        if any(emp["name"].lower() == name.lower() for emp in employees):
-            return False
+        all_employees = self._load_employees_from_local(include_deleted=True)
+        for emp in all_employees:
+            if emp["name"].lower() == name.lower():
+                # Если сотрудник удален, восстанавливаем его
+                if emp.get('is_deleted', 0) == 1:
+                    return self.restore_employee(name)
+                return False
         
         # Добавляем в локальную БД
         conn = sqlite3.connect(self.local_db)
         cursor = conn.cursor()
         
         try:
-            cursor.execute("INSERT INTO employees (name) VALUES (?)", (name,))
+            # Проверяем наличие колонки is_deleted
+            cursor.execute("PRAGMA table_info(employees)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'is_deleted' in columns:
+                cursor.execute("INSERT INTO employees (name, is_deleted) VALUES (?, 0)", (name,))
+            else:
+                cursor.execute("INSERT INTO employees (name) VALUES (?)", (name,))
+            
             conn.commit()
             # Обновляем кэш
-            self._employees = self._load_employees_from_local()
+            self._update_employee_caches()
         except sqlite3.IntegrityError:
             return False
         finally:
@@ -466,6 +546,87 @@ class ScheduleManager:
         })
         
         return True
+    
+    def update_employee(self, old_name, new_name):
+        """Обновление данных сотрудника"""
+        conn = sqlite3.connect(self.local_db)
+        cursor = conn.cursor()
+        
+        try:
+            # Проверяем, существует ли сотрудник с новым именем
+            cursor.execute("SELECT id FROM employees WHERE name = ? AND name != ?", (new_name, old_name))
+            if cursor.fetchone():
+                return False, "Сотрудник с таким именем уже существует"
+            
+            # Обновляем данные
+            cursor.execute("UPDATE employees SET name = ? WHERE name = ?", (new_name, old_name))
+            
+            # Обновляем все расписания, где упоминается этот сотрудник
+            cursor.execute("UPDATE schedules SET employee_name = ? WHERE employee_name = ?", 
+                         (new_name, old_name))
+            
+            conn.commit()
+            
+            # Обновляем кэш
+            self._update_employee_caches()
+            
+            # Очищаем кэш расписаний, так как имена сотрудников изменились
+            self._cache = {}
+            
+            return True, "Данные сотрудника обновлены"
+        except Exception as e:
+            conn.rollback()
+            return False, f"Ошибка обновления: {str(e)}"
+        finally:
+            conn.close()
+    
+    def delete_employee(self, name):
+        """Помечаем сотрудника как удаленного (мягкое удаление)"""
+        conn = sqlite3.connect(self.local_db)
+        cursor = conn.cursor()
+        
+        try:
+            # Проверяем наличие колонки is_deleted
+            cursor.execute("PRAGMA table_info(employees)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'is_deleted' in columns:
+                cursor.execute("UPDATE employees SET is_deleted = 1 WHERE name = ?", (name,))
+                conn.commit()
+                # Обновляем кэш
+                self._update_employee_caches()
+                return True, "Сотрудник помечен как удаленный"
+            else:
+                return False, "Функция удаления не поддерживается в текущей версии базы данных"
+        except Exception as e:
+            conn.rollback()
+            return False, f"Ошибка удаления: {str(e)}"
+        finally:
+            conn.close()
+    
+    def restore_employee(self, name):
+        """Восстановление удаленного сотрудника"""
+        conn = sqlite3.connect(self.local_db)
+        cursor = conn.cursor()
+        
+        try:
+            # Проверяем наличие колонки is_deleted
+            cursor.execute("PRAGMA table_info(employees)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'is_deleted' in columns:
+                cursor.execute("UPDATE employees SET is_deleted = 0 WHERE name = ?", (name,))
+                conn.commit()
+                # Обновляем кэш
+                self._update_employee_caches()
+                return True, "Сотрудник восстановлен"
+            else:
+                return False, "Функция восстановления не поддерживается в текущей версии базы данных"
+        except Exception as e:
+            conn.rollback()
+            return False, f"Ошибка восстановления: {str(e)}"
+        finally:
+            conn.close()
     
     def create_period(self, period, employees):
         """Создание периода"""
@@ -487,9 +648,9 @@ class ScheduleManager:
         self._cache[period] = schedule_data
         
         # Обновляем кэш периодов
-        if period not in self._periods:
-            self._periods.append(period)
-            self._periods.sort()
+        if period not in self._periods_cache:
+            self._periods_cache.append(period)
+            self._periods_cache.sort()
         
         # Отправляем на сервер
         response = self.network_manager.send_request({
@@ -533,7 +694,257 @@ class ScheduleManager:
         
         # Собираем все локальные данные для синхронизации
         sync_data = {
-            'employees': self._load_employees_from_local(),
+            'employees': [emp for emp in self._load_employees_from_local(include_deleted=False)],
+            'periods': self._load_periods_from_local(),
+            'schedules': []
+        }
+        
+        # Добавляем расписания всех периодов
+        for period in sync_data['periods']:
+            schedule_data = self.load_schedule(period)
+            if schedule_data:
+                sync_data['schedules'].append({
+                    'period': period,
+                    'schedule': schedule_data['schedule'],
+                    'notes': schedule_data.get('notes', {})
+                })
+        
+        # Отправляем на сервер
+        response = self.network_manager.send_request({
+            'action': 'sync_data',
+            'data': sync_data
+        })
+        
+        return response.get('status') == 'success'
+    
+    def _load_employees_from_local(self, include_deleted=False):
+        """Загрузка сотрудников из локальной БД"""
+        conn = sqlite3.connect(self.local_db)
+        cursor = conn.cursor()
+        
+        try:
+            # Проверяем наличие колонки is_deleted
+            cursor.execute("PRAGMA table_info(employees)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'is_deleted' in columns:
+                if include_deleted:
+                    cursor.execute("SELECT name, position, is_deleted FROM employees")
+                else:
+                    cursor.execute("SELECT name, position FROM employees WHERE is_deleted = 0")
+            else:
+                # Если колонки нет, получаем всех сотрудников
+                cursor.execute("SELECT name, position FROM employees")
+            
+            employees = []
+            for row in cursor.fetchall():
+                if include_deleted and 'is_deleted' in columns:
+                    emp = {'name': row[0], 'position': row[1], 'is_deleted': row[2]}
+                else:
+                    emp = {'name': row[0], 'position': row[1]}
+                employees.append(emp)
+            return employees
+        except Exception as e:
+            print(f"Ошибка загрузки сотрудников: {e}")
+            return []
+        finally:
+            conn.close()
+    
+    def save_schedule(self, period, data):
+        """Сохранение расписания на сервер и в локальную БД"""
+        # Всегда сохраняем в локальную БД
+        self._save_schedule_to_local(period, data)
+        self._cache[period] = data
+        
+        # Отправляем на сервер
+        response = self.network_manager.send_request({
+            'action': 'save_schedule',
+            'period': period,
+            'data': data
+        })
+        
+        return response.get('status') == 'success' or response.get('status') == 'offline'
+    
+    def add_employee(self, name):
+        """Добавление сотрудника"""
+        # Проверяем локально
+        all_employees = self._load_employees_from_local(include_deleted=True)
+        for emp in all_employees:
+            if emp["name"].lower() == name.lower():
+                # Если сотрудник удален, восстанавливаем его
+                if emp.get('is_deleted', 0) == 1:
+                    return self.restore_employee(name)
+                return False
+        
+        # Добавляем в локальную БД
+        conn = sqlite3.connect(self.local_db)
+        cursor = conn.cursor()
+        
+        try:
+            # Проверяем наличие колонки is_deleted
+            cursor.execute("PRAGMA table_info(employees)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'is_deleted' in columns:
+                cursor.execute("INSERT INTO employees (name, is_deleted) VALUES (?, 0)", (name,))
+            else:
+                cursor.execute("INSERT INTO employees (name) VALUES (?)", (name,))
+            
+            conn.commit()
+            # Обновляем кэш
+            self._update_employee_caches()
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            conn.close()
+        
+        # Отправляем на сервер
+        response = self.network_manager.send_request({
+            'action': 'add_employee',
+            'name': name
+        })
+        
+        return True
+    
+    def update_employee(self, old_name, new_name, new_position):
+        """Обновление данных сотрудника"""
+        conn = sqlite3.connect(self.local_db)
+        cursor = conn.cursor()
+        
+        try:
+            # Проверяем, существует ли сотрудник с новым именем
+            cursor.execute("SELECT id FROM employees WHERE name = ? AND name != ?", (new_name, old_name))
+            if cursor.fetchone():
+                return False, "Сотрудник с таким именем уже существует"
+            
+            # Обновляем данные
+            cursor.execute("UPDATE employees SET name = ?, position = ? WHERE name = ?", 
+                         (new_name, new_position, old_name))
+            
+            # Обновляем все расписания, где упоминается этот сотрудник
+            cursor.execute("UPDATE schedules SET employee_name = ? WHERE employee_name = ?", 
+                         (new_name, old_name))
+            
+            conn.commit()
+            
+            # Обновляем кэш
+            self._update_employee_caches()
+            
+            # Очищаем кэш расписаний, так как имена сотрудников изменились
+            self._cache = {}
+            
+            return True, "Данные сотрудника обновлены"
+        except Exception as e:
+            conn.rollback()
+            return False, f"Ошибка обновления: {str(e)}"
+        finally:
+            conn.close()
+    
+    def delete_employee(self, name):
+        """Помечаем сотрудника как удаленного (мягкое удаление)"""
+        conn = sqlite3.connect(self.local_db)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("UPDATE employees SET is_deleted = 1 WHERE name = ?", (name,))
+            conn.commit()
+            
+            # Обновляем кэш
+            self._update_employee_caches()
+            
+            return True, "Сотрудник помечен как удаленный"
+        except Exception as e:
+            conn.rollback()
+            return False, f"Ошибка удаления: {str(e)}"
+        finally:
+            conn.close()
+    
+    def restore_employee(self, name):
+        """Восстановление удаленного сотрудника"""
+        conn = sqlite3.connect(self.local_db)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("UPDATE employees SET is_deleted = 0 WHERE name = ?", (name,))
+            conn.commit()
+            
+            # Обновляем кэш
+            self._update_employee_caches()
+            
+            return True, "Сотрудник восстановлен"
+        except Exception as e:
+            conn.rollback()
+            return False, f"Ошибка восстановления: {str(e)}"
+        finally:
+            conn.close()
+    
+    def create_period(self, period, employees):
+        """Создание периода"""
+        # Создаем локальную структуру данных
+        try:
+            year, month = map(int, period.split('-'))
+            days_in_month = monthrange(year, month)[1]
+        except:
+            days_in_month = 31
+        
+        schedule_data = {
+            "employees": [{"name": name} for name in employees],
+            "schedule": {name: [4] * days_in_month for name in employees},
+            "notes": {}
+        }
+        
+        # Сохраняем в локальную БД
+        self._save_schedule_to_local(period, schedule_data)
+        self._cache[period] = schedule_data
+        
+        # Обновляем кэш периодов
+        if period not in self._periods_cache:
+            self._periods_cache.append(period)
+            self._periods_cache.sort()
+        
+        # Отправляем на сервер
+        response = self.network_manager.send_request({
+            'action': 'create_period',
+            'period': period,
+            'employees': employees
+        })
+        
+        return response.get('status') == 'success' or response.get('status') == 'offline'
+    
+    def add_employees_to_period(self, period, employees):
+        """Добавление сотрудников в период"""
+        # Загружаем текущее расписание
+        current_data = self.load_schedule(period)
+        if not current_data:
+            return False
+        
+        # Добавляем новых сотрудников
+        for emp_name in employees:
+            if emp_name not in [emp["name"] for emp in current_data["employees"]]:
+                current_data["employees"].append({"name": emp_name})
+                current_data["schedule"][emp_name] = [4] * 31  # 31 день по умолчанию
+        
+        # Сохраняем в локальную БД
+        self._save_schedule_to_local(period, current_data)
+        self._cache[period] = current_data
+        
+        # Отправляем на сервер
+        response = self.network_manager.send_request({
+            'action': 'add_employees_to_period',
+            'period': period,
+            'employees': employees
+        })
+        
+        return response.get('status') == 'success' or response.get('status') == 'offline'
+    
+    def sync_with_server(self):
+        """Синхронизация данных с сервером"""
+        if not self.network_manager.connected:
+            return False
+        
+        # Собираем все локальные данные для синхронизации
+        sync_data = {
+            'employees': [emp for emp in self._load_employees_from_local(include_deleted=False)],
             'periods': self._load_periods_from_local(),
             'schedules': []
         }
@@ -642,7 +1053,7 @@ class MonthSelectionDialog(QDialog):
         grid_layout.addWidget(self.year_combo, 0, 1)
         
         # Месяц
-        grid_layout.addWidget(QLabel("Месяц:"), 1, 0)
+        grid_layout.addWidget(QLabel("Месец:"), 1, 0)
         self.month_combo = QComboBox()
         month_names = {
             1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
@@ -729,6 +1140,242 @@ class NoteItem(QTableWidgetItem):
         return NoteItem(self.text(), self.has_note, self.note_data.copy())
 
 
+class EmployeeManagerDialog(QDialog):
+    """Диалог управления сотрудниками"""
+    def __init__(self, db, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.setWindowTitle("Управление сотрудниками")
+        self.setModal(True)
+        self.setMinimumSize(600, 500)
+        
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+        
+        # Создаем вкладки
+        self.tab_widget = QTabWidget()
+        
+        # Вкладка активных сотрудников
+        self.active_tab = QWidget()
+        self.active_layout = QVBoxLayout(self.active_tab)
+        self.setup_active_tab()
+        
+        # Вкладка удаленных сотрудников
+        self.deleted_tab = QWidget()
+        self.deleted_layout = QVBoxLayout(self.deleted_tab)
+        self.setup_deleted_tab()
+        
+        self.tab_widget.addTab(self.active_tab, "Активные сотрудники")
+        self.tab_widget.addTab(self.deleted_tab, "Удаленные сотрудники")
+        
+        layout.addWidget(self.tab_widget)
+        
+        # Кнопки внизу
+        button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+        # Загружаем данные
+        self.load_employees()
+    
+    def setup_active_tab(self):
+        """Настройка вкладки активных сотрудников"""
+        # Панель кнопок
+        button_layout = QHBoxLayout()
+        
+        self.add_btn = QPushButton("Добавить")
+        self.add_btn.clicked.connect(self.add_employee)
+        button_layout.addWidget(self.add_btn)
+        
+        self.edit_btn = QPushButton("Редактировать")
+        self.edit_btn.clicked.connect(self.edit_employee)
+        button_layout.addWidget(self.edit_btn)
+        
+        self.delete_btn = QPushButton("Удалить")
+        self.delete_btn.clicked.connect(self.delete_employee)
+        button_layout.addWidget(self.delete_btn)
+        
+        self.active_layout.addLayout(button_layout)
+        
+        # Список сотрудников
+        self.active_list = QListWidget()
+        self.active_list.itemDoubleClicked.connect(self.edit_employee)
+        self.active_layout.addWidget(self.active_list)
+    
+    def setup_deleted_tab(self):
+        """Настройка вкладки удаленных сотрудников"""
+        # Панель кнопок
+        button_layout = QHBoxLayout()
+        
+        self.restore_btn = QPushButton("Восстановить")
+        self.restore_btn.clicked.connect(self.restore_employee)
+        button_layout.addWidget(self.restore_btn)
+        
+        self.deleted_layout.addLayout(button_layout)
+        
+        # Список удаленных сотрудников
+        self.deleted_list = QListWidget()
+        self.deleted_layout.addWidget(self.deleted_list)
+    
+    def load_employees(self):
+        """Загрузка сотрудников"""
+        # Активные сотрудники
+        self.active_list.clear()
+        active_employees = self.db.load_employees(include_deleted=False)
+        for emp in active_employees:
+            item_text = emp['name']
+            if emp.get('position'):
+                item_text += f" ({emp['position']})"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, emp)
+            self.active_list.addItem(item)
+        
+        # Удаленные сотрудники
+        self.deleted_list.clear()
+        all_employees = self.db.load_employees(include_deleted=True)
+        deleted_employees = [emp for emp in all_employees if emp.get('is_deleted', 0) == 1]
+        for emp in deleted_employees:
+            item_text = emp['name']
+            if emp.get('position'):
+                item_text += f" ({emp['position']})"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, emp)
+            item.setForeground(Qt.gray)
+            self.deleted_list.addItem(item)
+    
+    def add_employee(self):
+        """Добавление нового сотрудника"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Добавить сотрудника")
+        dialog.setModal(True)
+        
+        layout = QVBoxLayout(dialog)
+        
+        form_layout = QFormLayout()
+        
+        name_edit = QLineEdit()
+        form_layout.addRow("ФИО сотрудника:", name_edit)
+        
+        layout.addLayout(form_layout)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            name = name_edit.text().strip()
+            
+            if not name:
+                QMessageBox.warning(self, "Ошибка", "ФИО сотрудника не может быть пустым")
+                return
+            
+            if self.db.add_employee(name):
+                QMessageBox.information(self, "Успех", "Сотрудник добавлен")
+                self.load_employees()
+                # Обновляем данные в главном окне
+                if self.parent():
+                    self.parent().load_initial_data()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось добавить сотрудника")
+    
+    def edit_employee(self):
+        """Редактирование сотрудника"""
+        current_item = self.active_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "Ошибка", "Выберите сотрудника для редактирования")
+            return
+        
+        emp_data = current_item.data(Qt.UserRole)
+        old_name = emp_data['name']
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Редактировать сотрудника")
+        dialog.setModal(True)
+        
+        layout = QVBoxLayout(dialog)
+        
+        form_layout = QFormLayout()
+        
+        name_edit = QLineEdit(old_name)
+        form_layout.addRow("ФИО сотрудника:", name_edit)
+        
+        layout.addLayout(form_layout)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            new_name = name_edit.text().strip()
+            
+            if not new_name:
+                QMessageBox.warning(self, "Ошибка", "ФИО сотрудника не может быть пустым")
+                return
+            
+            if new_name == old_name:
+                return  # Ничего не изменилось
+            
+            # Вызываем метод update_employee с тремя аргументами (третий - пустая строка)
+            success, message = self.db.update_employee(old_name, new_name, "")
+            if success:
+                # Не показываем сообщение об успехе
+                self.load_employees()
+                # Обновляем данные в главном окне
+                if self.parent():
+                    self.parent().load_initial_data()
+            else:
+                QMessageBox.warning(self, "Ошибка", message)
+                    
+    def delete_employee(self):
+        """Удаление сотрудника"""
+        current_item = self.active_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "Ошибка", "Выберите сотрудника для удаления")
+            return
+        
+        emp_data = current_item.data(Qt.UserRole)
+        name = emp_data['name']
+        
+        reply = QMessageBox.question(self, "Подтверждение", 
+                                   f"Вы уверены, что хотите удалить сотрудника '{name}'?\n\n"
+                                   "Примечание: Сотрудник не будет удален из существующих таблиц расписания, "
+                                   "но будет скрыт из списка активных сотрудников.",
+                                   QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            success, message = self.db.delete_employee(name)
+            if success:
+                QMessageBox.information(self, "Успех", message)
+                self.load_employees()
+                # Обновляем данные в главном окне
+                if self.parent():
+                    self.parent().load_initial_data()
+            else:
+                QMessageBox.warning(self, "Ошибка", message)
+    
+    def restore_employee(self):
+        """Восстановление удаленного сотрудника"""
+        current_item = self.deleted_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "Ошибка", "Выберите сотрудника для восстановления")
+            return
+        
+        emp_data = current_item.data(Qt.UserRole)
+        name = emp_data['name']
+        
+        success, message = self.db.restore_employee(name)
+        if success:
+            QMessageBox.information(self, "Успех", message)
+            self.load_employees()
+            # Обновляем данные в главном окне
+            if self.parent():
+                self.parent().load_initial_data()
+        else:
+            QMessageBox.warning(self, "Ошибка", message)
+
+
 class MonthWidget(QWidget):
     def __init__(self, parent=None, db=None):
         super().__init__(parent)
@@ -740,19 +1387,20 @@ class MonthWidget(QWidget):
     def initUI(self):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)  # Уменьшил расстояние между элементами
+        layout.setSpacing(0)
         self.setLayout(layout)
         
         # Верхняя панель с выбором месяца
         top_layout = QHBoxLayout()
-        top_layout.setContentsMargins(2, 2, 2, 2)  # Уменьшил отступы
+        top_layout.setContentsMargins(1, 10, 1, 1)
         
         self.period_combo = QComboBox()
-        self.period_combo.setMinimumWidth(200)  # Уменьшил ширину
-        self.period_combo.setFixedHeight(24)    # Уменьшил высоту
+        self.period_combo.setMinimumWidth(200)
+        self.period_combo.setFixedHeight(24)
         self.period_combo.setStyleSheet("""
             QComboBox {
                 min-width: 120px;
+                max-width: 150px;
                 height: 24px;
                 font-size: 12px;
                 padding: 2px;
@@ -773,12 +1421,13 @@ class MonthWidget(QWidget):
         
         month_label = QLabel()
         month_label_font = month_label.font()
-        month_label_font.setPointSize(12)  # Уменьшил размер шрифта
+        month_label_font.setPointSize(12)
         month_label.setFont(month_label_font)
         
         top_layout.addWidget(month_label)
         top_layout.addWidget(self.period_combo)
         top_layout.addStretch()
+        
         layout.addLayout(top_layout)
         
         # Таблица
@@ -801,12 +1450,12 @@ class MonthWidget(QWidget):
         # Уменьшил размеры шрифтов заголовков
         font = table.horizontalHeader().font()
         font.setBold(True)
-        font.setPointSize(11)  # Уменьшил с 12 до 9
+        font.setPointSize(10)
         table.horizontalHeader().setFont(font)
         
         font = table.verticalHeader().font()
         font.setBold(True)
-        font.setPointSize(11)  # Уменьшил с 12 до 9
+        font.setPointSize(10)
         table.verticalHeader().setFont(font)
     
     def load_periods(self):
@@ -919,21 +1568,9 @@ class MonthWidget(QWidget):
         self.table.is_loading = False
         self.update_counters()
         
-        fixed_day_width = 22  # Уменьшил с 25 до 22
+        # Применяем текущий масштаб после загрузки данных
+        self.apply_scale(self.parent_app.current_scale)
         
-        for col in range(days_in_month):
-            self.table.setColumnWidth(col, fixed_day_width)
-        
-        # Уменьшил ширину итоговых столбцов
-        self.table.setColumnWidth(days_in_month, 60)      # Было 70
-        self.table.setColumnWidth(days_in_month + 1, 60)  # Было 70
-        self.table.setColumnWidth(days_in_month + 2, 60)  # Было 70
-        self.table.setColumnWidth(days_in_month + 3, 60)  # Было 80
-        
-        for col in range(days_in_month + 4):
-            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.Fixed)
-    
-        self.table.verticalHeader().setDefaultSectionSize(22)  # Уменьшил с 30 до 22
         self.table.viewport().update()
 
     def hours_to_hours_minutes(self, total_hours):
@@ -1002,7 +1639,7 @@ class MonthWidget(QWidget):
                     total_shifts_item = QTableWidgetItem()
                     total_shifts_item.setTextAlignment(Qt.AlignCenter)
                     total_shifts_item.setFlags(total_shifts_item.flags() ^ Qt.ItemIsEditable)
-                    total_shifts_item.setFont(QFont("Arial", 9, QFont.Bold))  # Уменьшил с 11 до 9
+                    total_shifts_item.setFont(QFont("Arial", 9, QFont.Bold))
                     self.table.setItem(row, days_in_month, total_shifts_item)
                 total_shifts_item.setText(f"{total_shifts}")
             
@@ -1012,7 +1649,7 @@ class MonthWidget(QWidget):
                     registry_item = QTableWidgetItem()
                     registry_item.setTextAlignment(Qt.AlignCenter)
                     registry_item.setFlags(registry_item.flags() ^ Qt.ItemIsEditable)
-                    registry_item.setFont(QFont("Arial", 9, QFont.Bold))  # Уменьшил с 11 до 9
+                    registry_item.setFont(QFont("Arial", 9, QFont.Bold))
                     self.table.setItem(row, days_in_month + 1, registry_item)
                 registry_item.setText(f"{registry_days}")
             
@@ -1022,7 +1659,7 @@ class MonthWidget(QWidget):
                     call_center_item = QTableWidgetItem()
                     call_center_item.setTextAlignment(Qt.AlignCenter)
                     call_center_item.setFlags(call_center_item.flags() ^ Qt.ItemIsEditable)
-                    call_center_item.setFont(QFont("Arial", 9, QFont.Bold))  # Уменьшил с 11 до 9
+                    call_center_item.setFont(QFont("Arial", 9, QFont.Bold))
                     self.table.setItem(row, days_in_month + 2, call_center_item)
                 call_center_item.setText(f"{call_center_days}")
             
@@ -1032,7 +1669,7 @@ class MonthWidget(QWidget):
                     hours_item = QTableWidgetItem()
                     hours_item.setTextAlignment(Qt.AlignCenter)
                     hours_item.setFlags(hours_item.flags() ^ Qt.ItemIsEditable)
-                    hours_item.setFont(QFont("Arial", 8, QFont.Bold))  # Уменьшил с 10 до 8
+                    hours_item.setFont(QFont("Arial", 8, QFont.Bold))
                     self.table.setItem(row, days_in_month + 3, hours_item)
                 
                 hours_text = f"{hours}ч {minutes}м"
@@ -1268,6 +1905,56 @@ class MonthWidget(QWidget):
         # Исправляем обращение к главному окну
         if hasattr(self, 'parent_app') and hasattr(self.parent_app, 'set_unsaved_changes'):
             self.parent_app.set_unsaved_changes(True)
+    
+    def apply_scale(self, scale_percent):
+        """Применение масштаба к таблице"""
+        if not self.table:
+            return
+        
+        # Базовые значения (при масштабе 100%)
+        base_row_height = 22
+        base_font_size = 9
+        base_header_font_size = 10
+        base_day_width = 15
+        base_result_width = 60
+        
+        # Рассчитываем новые значения
+        scale_factor = scale_percent / 100.0
+        
+        # Устанавливаем высоту строк
+        new_row_height = int(base_row_height * scale_factor)
+        self.table.verticalHeader().setDefaultSectionSize(new_row_height)
+        
+        # Устанавливаем ширину столбцов дней
+        days_in_month = self.table.columnCount() - 4
+        for col in range(days_in_month):
+            new_width = int(base_day_width * scale_factor)
+            self.table.setColumnWidth(col, max(new_width, 10))  # Минимум 10 пикселей
+        
+        # Устанавливаем ширину итоговых столбцов
+        if days_in_month < self.table.columnCount():
+            new_result_width = int(base_result_width * scale_factor)
+            self.table.setColumnWidth(days_in_month, max(new_result_width, 30))  # Смены
+        if days_in_month + 1 < self.table.columnCount():
+            self.table.setColumnWidth(days_in_month + 1, max(new_result_width, 30))  # Рег
+        if days_in_month + 2 < self.table.columnCount():
+            self.table.setColumnWidth(days_in_month + 2, max(new_result_width, 30))  # КЦ
+        if days_in_month + 3 < self.table.columnCount():
+            self.table.setColumnWidth(days_in_month + 3, max(new_result_width, 30))  # Часы
+        
+        # Обновляем шрифты
+        font = self.table.font()
+        font.setPointSizeF(base_font_size * scale_factor)
+        self.table.setFont(font)
+        
+        # Обновляем шрифты заголовков
+        header_font = self.table.horizontalHeader().font()
+        header_font.setPointSizeF(base_header_font_size * scale_factor)
+        self.table.horizontalHeader().setFont(header_font)
+        self.table.verticalHeader().setFont(header_font)
+        
+        # Обновляем отображение
+        self.table.viewport().update()
 
 
 class EmployeeSelectionDialog(QDialog):
@@ -1394,6 +2081,12 @@ class ScheduleApp(QMainWindow):
         self.network_manager = NetworkManager()
         self.db = ScheduleManager(self.network_manager)
         
+        # Добавляем переменную для времени последнего сохранения
+        self.last_save_time = None
+        
+        # Добавляем переменную для текущего масштаба
+        self.current_scale = self.settings.value("scale", 100, type=int)
+        
         self.export_folder = self.settings.value("export_folder", "")
         
         # Настройки подключения
@@ -1430,10 +2123,17 @@ class ScheduleApp(QMainWindow):
         
         # Автоподключение при запуске
         QTimer.singleShot(100, self.auto_connect)
+        
+        # Загружаем время последнего сохранения из настроек при старте
+        self.load_last_save_time()
+        
+        # Таймер для обновления времени каждую минуту
+        self.time_update_timer = QTimer()
+        self.time_update_timer.timeout.connect(self.update_time_display)
+        self.time_update_timer.start(60000)  # Каждую минуту
     
     def initUI(self):
         self.setWindowTitle("Рабочее расписание")
-        #self.setGeometry(100, 100, 1400, 700)  #размер окна
         self.setWindowIcon(QIcon('schedule.ico'))
         
         self.central_widget = QWidget()
@@ -1443,13 +2143,44 @@ class ScheduleApp(QMainWindow):
         self.layout.setSpacing(5)
         self.central_widget.setLayout(self.layout)
         
-        # Добавляем меню подключения
+        # Создаем меню
         menubar = self.menuBar()
-        connection_menu = menubar.addMenu('Подключение')
         
+        # Меню "Подключение"
+        connection_menu = menubar.addMenu('Подключение')
         connection_action = QAction('Настройки подключения', self)
         connection_action.triggered.connect(self.show_connection_dialog)
         connection_menu.addAction(connection_action)
+        
+        # Меню "Сотрудники"
+        employees_menu = menubar.addMenu('Сотрудники')
+        
+        # Пункт "Управление сотрудниками"
+        manage_employees_action = QAction('Управление сотрудниками', self)
+        manage_employees_action.triggered.connect(self.show_employee_manager)
+        employees_menu.addAction(manage_employees_action)
+        
+        employees_menu.addSeparator()
+        
+        # Пункт "Добавить сотрудника" (для быстрого доступа)
+        add_employee_action = QAction('Добавить сотрудника', self)
+        add_employee_action.triggered.connect(self.add_employee_dialog)
+        employees_menu.addAction(add_employee_action)
+        
+        # Меню "Масштаб"
+        scale_menu = menubar.addMenu('Масштаб')
+        self.scale_actions = []
+        
+        # Создаем варианты масштаба от 10% до 100% с шагом 10%
+        for scale_value in range(10, 101, 10):
+            scale_action = QAction(f'{scale_value}%', self)
+            scale_action.triggered.connect(lambda checked, sv=scale_value: self.set_scale_by_menu(sv))
+            scale_menu.addAction(scale_action)
+            self.scale_actions.append(scale_action)
+            
+            # Отмечаем текущий масштаб
+            if scale_value == self.current_scale:
+                scale_action.setChecked(True)
         
         # Статус подключения в тулбаре
         self.connection_status = QLabel("Не подключено")
@@ -1475,8 +2206,8 @@ class ScheduleApp(QMainWindow):
         # Кнопка Новый месяц
         self.new_month_btn = QPushButton("Новый месяц")
         self.new_month_btn.clicked.connect(self.select_month_and_year)
-        self.new_month_btn.setFixedHeight(35)  # Было 35
-        self.new_month_btn.setFixedWidth(120)  # Было 120
+        self.new_month_btn.setFixedHeight(35)
+        self.new_month_btn.setFixedWidth(120)
         self.new_month_btn.setStyleSheet("""
             QPushButton {
                 background: #06B6D4;
@@ -1499,7 +2230,7 @@ class ScheduleApp(QMainWindow):
         self.add_employee_btn = QPushButton("Новый сотрудник")
         self.add_employee_btn.clicked.connect(self.add_employee_dialog)
         self.add_employee_btn.setFixedHeight(30)
-        self.add_employee_btn.setFixedWidth(140)  
+        self.add_employee_btn.setFixedWidth(140)
         self.add_employee_btn.setStyleSheet("""
             QPushButton {
                 background-color: #808080;
@@ -1521,8 +2252,8 @@ class ScheduleApp(QMainWindow):
         # Кнопка для добавления сотрудников в текущий период
         self.add_to_period_btn = QPushButton("Добавить в месяц")
         self.add_to_period_btn.clicked.connect(self.add_employees_to_period)
-        self.add_to_period_btn.setFixedHeight(30) 
-        self.add_to_period_btn.setFixedWidth(140)  
+        self.add_to_period_btn.setFixedHeight(30)
+        self.add_to_period_btn.setFixedWidth(140)
         self.add_to_period_btn.setStyleSheet("""
             QPushButton {
                 background-color: #808080;
@@ -1548,8 +2279,8 @@ class ScheduleApp(QMainWindow):
         # Кнопка Открыть документ
         self.open_doc_btn = QPushButton("Открыть документ")
         self.open_doc_btn.clicked.connect(self.open_document)
-        self.open_doc_btn.setFixedHeight(30) 
-        self.open_doc_btn.setFixedWidth(140)  
+        self.open_doc_btn.setFixedHeight(30)
+        self.open_doc_btn.setFixedWidth(140)
         self.open_doc_btn.setStyleSheet("""
             QPushButton {
                 background-color: #808080;
@@ -1634,8 +2365,8 @@ class ScheduleApp(QMainWindow):
         self.splitter.addWidget(self.month_widget1)
         self.splitter.addWidget(self.month_widget2)
         
-        # Уменьшил высоту сплиттера
-        self.splitter.setSizes([300, 300])  # Было [350, 350]
+        # Устанавливаем размеры сплиттера
+        self.splitter.setSizes([300, 300])
         
         # Легенда статусов
         self.legend_layout = QHBoxLayout()
@@ -1647,15 +2378,29 @@ class ScheduleApp(QMainWindow):
             legend_item.setSpacing(2)
             color_label = QLabel("")
             color_label.setStyleSheet(f"font-size: 12px; background: {color.name()}; padding: 0px;")
-            color_label.setFixedSize(12, 12)  #размер
+            color_label.setFixedSize(12, 12)
             legend_item.addWidget(color_label)
             
             text_label = QLabel(text)
-            text_label.setStyleSheet("padding: 0px; font-size: 12px;") 
+            text_label.setStyleSheet("padding: 0px; font-size: 12px;")
             legend_item.addWidget(text_label)
             self.legend_layout.addLayout(legend_item)
         
         self.legend_layout.addStretch()
+        
+        # Метка для отображения времени последнего сохранения
+        self.last_update_label = QLabel("Еще не сохранено")
+        self.last_update_label.setStyleSheet("""
+            QLabel {
+                color: #6c757d;
+                font-size: 11px;
+                padding: 2px 8px;
+                background-color: #f8f9fa;
+                border-radius: 4px;
+                border: 1px solid #dee2e6;
+            }
+        """)
+        self.legend_layout.addWidget(self.last_update_label)
         
         # Кнопка обновления в правом нижнем углу
         self.refresh_btn = QPushButton("Обновить")
@@ -1665,7 +2410,7 @@ class ScheduleApp(QMainWindow):
             QPushButton {
                 background-color: #6c757d;
                 color: white;
-                border: none;f;
+                border: none;
                 border-radius: 4px;
                 font-size: 11px;
             }
@@ -1683,6 +2428,11 @@ class ScheduleApp(QMainWindow):
         
         self.statusBar().showMessage("Готово")
     
+    def show_employee_manager(self):
+        """Показать диалог управления сотрудниками"""
+        dialog = EmployeeManagerDialog(self.db, self)
+        dialog.exec_()
+    
     def set_unsaved_changes(self, has_changes):
         """Установка статуса несохраненных изменений"""
         self.unsaved_changes = has_changes
@@ -1695,6 +2445,7 @@ class ScheduleApp(QMainWindow):
         else:
             self.save_status.setText("Сохранено")
             self.save_status.setStyleSheet("color: green; font-weight: bold; padding: 2px;")
+            self.auto_save_timer.stop()  # Останавливаем таймер, если изменения сохранены
     
     def init_shortcuts(self):
         for status, (icon, text, _, _) in self.status_mapping.items():
@@ -1749,25 +2500,65 @@ class ScheduleApp(QMainWindow):
                 self.month_widget2.period_combo.setCurrentIndex(len(periods) - 1)
             else:
                 self.month_widget2.period_combo.setCurrentIndex(0)
+        
+        # Применяем сохраненный масштаб
+        self.apply_scale(self.current_scale)
     
     def refresh_data(self):
         """Обновление данных с сервера"""
+        # Просто вызываем show_refresh_status для обновления данных
+        self.show_refresh_status()
+        # Сохраняем текущие выбранные периоды
+        current_period1 = self.month_widget1.current_period
+        current_period2 = self.month_widget2.current_period
+        
         if self.network_manager.connected:
             # Загружаем свежие данные с сервера
             try:
                 # Принудительно обновляем кэши
                 self.db._employees = []  # Сбрасываем кэш сотрудников
-                self.db._periods = []    # Сбрасываем кэш периодов
+                self.db._all_employees = []  # Сбрасываем кэш всех сотрудников
+                self.db._periods_cache = []    # Сбрасываем кэш периодов
                 self.db._cache = {}      # Сбрасываем кэш расписаний
                 
                 # Загружаем обновленные данные
                 employees = self.db.load_employees()
                 periods = self.db.get_periods()
                 
-                # Обновляем отображение
-                self.load_initial_data()
+                # Обновляем комбо-боксы периодов
+                self.month_widget1.load_periods()
+                self.month_widget2.load_periods()
                 
-                self.statusBar().showMessage("Данные успешно обновлены с сервера", 3000)
+                # Восстанавливаем выбранные периоды
+                if current_period1:
+                    index = self.month_widget1.period_combo.findData(current_period1)
+                    if index >= 0:
+                        self.month_widget1.period_combo.setCurrentIndex(index)
+                
+                if current_period2:
+                    index = self.month_widget2.period_combo.findData(current_period2)
+                    if index >= 0:
+                        self.month_widget2.period_combo.setCurrentIndex(index)
+                
+                # ОБНОВЛЯЕМ МЕТКУ ВРЕМЕНИ (рассчитываем разницу)
+                current_time = datetime.now()
+                hours = current_time.hour
+                minutes = current_time.minute
+                
+                if self.last_save_time:
+                    # Рассчитываем разницу между текущим временем и временем последнего сохранения
+                    time_diff = current_time - self.last_save_time
+                    total_minutes = time_diff.seconds // 60
+                    hours_diff = total_minutes // 60
+                    minutes_diff = total_minutes % 60
+                    
+                    if hours_diff > 0:
+                        self.statusBar().showMessage(f"Данные обновлены с сервера. Последнее сохранение {hours_diff} ч. {minutes_diff} мин. назад", 3000)
+                    else:
+                        self.statusBar().showMessage(f"Данные обновлены с сервера. Последнее сохранение {minutes_diff} мин. назад", 3000)
+                else:
+                    self.statusBar().showMessage(f"Данные обновлены с сервера в {hours:02d}:{minutes:02d}", 3000)
+                    
             except Exception as e:
                 self.statusBar().showMessage(f"Ошибка обновления: {str(e)}", 3000)
         else:
@@ -1875,12 +2666,22 @@ class ScheduleApp(QMainWindow):
             if success_count > 0:
                 if self.network_manager.connected:
                     message = f"Успешно сохранено {success_count} из {total_count} месяцев на сервер"
+                    # ОБНОВЛЯЕМ ВРЕМЯ СОХРАНЕНИЯ
+                    self.update_last_save_time()
+                    self.statusBar().showMessage(message, 3000)
+                    
+                    # Выполняем обновление данных с сервера и показываем статус обновления
+                    self.show_refresh_status()
+                    
                 else:
                     message = f"Успешно сохранено {success_count} из {total_count} месяцев локально (сервер недоступен)"
+                    # Даже при сохранении локально обновляем время
+                    self.update_last_save_time()
+                    self.statusBar().showMessage(message, 5000)
                 
-                self.statusBar().showMessage(message, 5000)
                 # Сбрасываем статус несохраненных изменений
                 self.set_unsaved_changes(False)
+                
             else:
                 self.statusBar().showMessage("Не удалось сохранить данные", 5000)
             
@@ -1890,6 +2691,72 @@ class ScheduleApp(QMainWindow):
         except Exception as e:
             self.statusBar().showMessage(f"Ошибка сохранения: {str(e)}", 5000)
     
+    def auto_save(self):
+        """Автоматическое сохранение через 5 минут после последнего изменения"""
+        if self.unsaved_changes and self.last_change_time and (datetime.now() - self.last_change_time).total_seconds() >= 300:
+            self.statusBar().showMessage("Автоматическое сохранение...", 2000)
+            self.save_data()
+
+    def show_refresh_status(self):
+        """Показать статус обновления с сервера"""
+        if not self.network_manager.connected:
+            self.statusBar().showMessage("Сервер недоступен, используются локальные данные", 3000)
+            return
+        
+        # Сохраняем текущие выбранные периоды
+        current_period1 = self.month_widget1.current_period
+        current_period2 = self.month_widget2.current_period
+        
+        try:
+            # Принудительно обновляем кэши
+            self.db._employees = []  # Сбрасываем кэш сотрудников
+            self.db._all_employees = []  # Сбрасываем кэш всех сотрудников
+            self.db._periods_cache = []    # Сбрасываем кэш периодов
+            self.db._cache = {}      # Сбрасываем кэш расписаний
+            
+            # Загружаем обновленные данные
+            employees = self.db.load_employees()
+            periods = self.db.get_periods()
+            
+            # Обновляем комбо-боксы периодов
+            self.month_widget1.load_periods()
+            self.month_widget2.load_periods()
+            
+            # Восстанавливаем выбранные периоды
+            if current_period1:
+                index = self.month_widget1.period_combo.findData(current_period1)
+                if index >= 0:
+                    self.month_widget1.period_combo.setCurrentIndex(index)
+            
+            if current_period2:
+                index = self.month_widget2.period_combo.findData(current_period2)
+                if index >= 0:
+                    self.month_widget2.period_combo.setCurrentIndex(index)
+            
+            # Рассчитываем разницу во времени
+            current_time = datetime.now()
+            hours = current_time.hour
+            minutes = current_time.minute
+            
+            if self.last_save_time:
+                time_diff = current_time - self.last_save_time
+                total_minutes = time_diff.seconds // 60
+                hours_diff = total_minutes // 60
+                minutes_diff = total_minutes % 60
+                
+                if hours_diff > 0:
+                    status_message = f"Данные обновлены с сервера. Последнее сохранение {hours_diff} ч. {minutes_diff} мин. назад"
+                else:
+                    status_message = f"Данные обновлены с сервера. Последнее сохранение {minutes_diff} мин. назад"
+            else:
+                status_message = f"Данные обновлены с сервера в {hours:02d}:{minutes:02d}"
+            
+            # Показываем статус обновления внизу
+            self.statusBar().showMessage(status_message, 5000)
+            
+        except Exception as e:
+            self.statusBar().showMessage(f"Ошибка обновления с сервера: {str(e)}", 3000)
+
     def prepare_save_data(self, widget):
         schedule_data = self.db.load_schedule(widget.current_period)
         if not schedule_data:
@@ -1952,20 +2819,43 @@ class ScheduleApp(QMainWindow):
     
     def auto_save(self):
         """Автоматическое сохранение через 5 минут после последнего изменения"""
-        if self.unsaved_changes and self.last_change_time and (datetime.now() - self.last_change_time).total_seconds() >= 60:
+        if self.unsaved_changes and self.last_change_time and (datetime.now() - self.last_change_time).total_seconds() >= 300:
             self.statusBar().showMessage("Автоматическое сохранение...", 2000)
             self.save_data()
+            # Обновляем метку времени
+            self.update_last_save_time()
     
     def add_employee_dialog(self):
-        name, ok = QInputDialog.getText(self, "Добавить сотрудника", "ФИО сотрудника:")
-        if ok and name:
-            name = name.strip()
+        """Быстрое добавление сотрудника через диалог"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Добавить сотрудника")
+        dialog.setModal(True)
+        
+        layout = QVBoxLayout(dialog)
+        
+        form_layout = QFormLayout()
+        
+        name_edit = QLineEdit()
+        form_layout.addRow("ФИО сотрудника:", name_edit)
+        
+        layout.addLayout(form_layout)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            name = name_edit.text().strip()
+            
             if not name:
-                self.statusBar().showMessage("Имя сотрудника не может быть пустым", 3000)
+                QMessageBox.warning(self, "Ошибка", "ФИО сотрудника не может быть пустым")
                 return
-                
+            
             if self.db.add_employee(name):
                 self.statusBar().showMessage("Сотрудник добавлен", 3000)
+                # Обновляем данные
+                self.load_initial_data()
             else:
                 self.statusBar().showMessage("Сотрудник с таким именем уже существует", 3000)
     
@@ -2276,6 +3166,93 @@ class ScheduleApp(QMainWindow):
             minutes = 0
             
         return hours, minutes
+
+    # ========== МЕТОДЫ ДЛЯ ОТОБРАЖЕНИЯ ВРЕМЕНИ И МАСШТАБА ==========
+    
+    def update_last_save_time(self):
+        """Обновление времени последнего сохранения"""
+        current_time = datetime.now()
+        self.last_save_time = current_time
+        
+        # Форматируем время для отображения
+        hours = current_time.hour
+        minutes = current_time.minute
+        
+        # Обновляем текст метки
+        self.last_update_label.setText(f"Сохранено {hours:02d}:{minutes:02d}")
+        
+        # Сохраняем время в настройки
+        self.save_last_save_time()
+    
+    def save_last_save_time(self):
+        """Сохранение времени последнего сохранения в настройки"""
+        if self.last_save_time:
+            time_str = self.last_save_time.strftime("%Y-%m-%d %H:%M:%S")
+            self.settings.setValue("last_save_time", time_str)
+    
+    def load_last_save_time(self):
+        """Загрузка времени последнего сохранения из настроек"""
+        time_str = self.settings.value("last_save_time")
+        if time_str:
+            try:
+                self.last_save_time = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+                hours = self.last_save_time.hour
+                minutes = self.last_save_time.minute
+                self.last_update_label.setText(f"Сохранено {hours:02d}:{minutes:02d}")
+            except:
+                self.last_update_label.setText("Еще не сохранено")
+        else:
+            self.last_update_label.setText("Еще не сохранено")
+    
+    def update_time_display(self):
+        """Обновление отображения времени последнего сохранения"""
+        if self.last_save_time:
+            current_time = datetime.now()
+            
+            # Рассчитываем разницу во времени
+            time_diff = current_time - self.last_save_time
+            
+            if time_diff.days > 0:
+                # Если прошло больше суток, показываем дату
+                if time_diff.days == 1:
+                    self.last_update_label.setText(f"Сохранено вчера в {self.last_save_time.hour:02d}:{self.last_save_time.minute:02d}")
+                else:
+                    self.last_update_label.setText(f"Сохранено {self.last_save_time.day:02d}.{self.last_save_time.month:02d} в {self.last_save_time.hour:02d}:{self.last_save_time.minute:02d}")
+            else:
+                # Рассчитываем часы и минуты разницы
+                total_minutes = time_diff.seconds // 60
+                hours_diff = total_minutes // 60
+                minutes_diff = total_minutes % 60
+                
+                if hours_diff > 0:
+                    self.last_update_label.setText(f"Сохранено {hours_diff} ч. {minutes_diff} мин. назад")
+                else:
+                    self.last_update_label.setText(f"Сохранено {minutes_diff} мин. назад")
+    
+    def set_scale_by_menu(self, scale_percent):
+        """Изменение масштаба через меню"""
+        self.current_scale = scale_percent
+        self.apply_scale(scale_percent)
+        
+        # Сохраняем настройки масштаба
+        self.settings.setValue("scale", scale_percent)
+        
+        # Показываем сообщение
+        self.statusBar().showMessage(f"Масштаб изменен на {scale_percent}%", 2000)
+    
+    def apply_scale(self, scale_percent):
+        """Применение масштаба к обеим таблицам"""
+        # Применяем масштаб к обоим виджетам месяцев
+        if self.month_widget1:
+            self.month_widget1.apply_scale(scale_percent)
+        if self.month_widget2:
+            self.month_widget2.apply_scale(scale_percent)
+    
+    def closeEvent(self, event):
+        """Обработка закрытия окна"""
+        # Сохраняем время последнего сохранения
+        self.save_last_save_time()
+        event.accept()
 
 
 if __name__ == "__main__":
