@@ -204,6 +204,17 @@ class ScheduleManager:
             )
         ''')
         
+        # Таблица порядка сотрудников в периодах
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS employee_order (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                period TEXT NOT NULL,
+                employee_name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL,
+                UNIQUE(period, employee_name)
+            )
+        ''')
+        
         # Добавляем колонку is_deleted, если ее нет
         try:
             cursor.execute("SELECT is_deleted FROM employees LIMIT 1")
@@ -402,6 +413,13 @@ class ScheduleManager:
                         notes_data.get('end_time'), notes_data.get('worked_hours')
                     ))
             
+            # Сохраняем порядок сотрудников
+            for i, emp in enumerate(data.get('employees', [])):
+                cursor.execute('''
+                    INSERT OR REPLACE INTO employee_order (period, employee_name, sort_order)
+                    VALUES (?, ?, ?)
+                ''', (period, emp['name'], i))
+            
             conn.commit()
         except Exception as e:
             print(f"Ошибка сохранения расписания: {e}")
@@ -424,27 +442,46 @@ class ScheduleManager:
             
             period_id = result[0]
             
-            # Получаем сотрудников периода (только активных)
-            # Проверяем наличие колонки is_deleted в таблице employees
-            cursor.execute("PRAGMA table_info(employees)")
-            columns = [col[1] for col in cursor.fetchall()]
+            # Получаем сотрудников периода с учетом порядка сортировки
+            cursor.execute('''
+                SELECT eo.employee_name, eo.sort_order, 
+                       COALESCE(e.position, '') as position,
+                       COALESCE(e.is_deleted, 0) as is_deleted
+                FROM employee_order eo
+                LEFT JOIN employees e ON eo.employee_name = e.name
+                WHERE eo.period = ?
+                ORDER BY eo.sort_order
+            ''', (period,))
             
-            if 'is_deleted' in columns:
-                cursor.execute('''
-                    SELECT DISTINCT s.employee_name 
-                    FROM schedules s
-                    LEFT JOIN employees e ON s.employee_name = e.name
-                    WHERE s.period_id = ? AND (e.is_deleted = 0 OR e.is_deleted IS NULL)
-                    ORDER BY s.employee_name
-                ''', (period_id,))
+            order_result = cursor.fetchall()
+            
+            if order_result:
+                # Используем порядок из таблицы employee_order
+                employees = []
+                for row in order_result:
+                    emp_name, sort_order, position, is_deleted = row
+                    if is_deleted == 0:  # Показываем только активных сотрудников
+                        employees.append({'name': emp_name, 'position': position})
             else:
-                # Если колонки нет, получаем всех сотрудников
-                cursor.execute('''
-                    SELECT DISTINCT employee_name FROM schedules 
-                    WHERE period_id = ? ORDER BY employee_name
-                ''', (period_id,))
-            
-            employees = [{'name': row[0]} for row in cursor.fetchall()]
+                # Если порядка нет, получаем сотрудников по умолчанию
+                cursor.execute("PRAGMA table_info(employees)")
+                columns = [col[1] for col in cursor.fetchall()]
+                
+                if 'is_deleted' in columns:
+                    cursor.execute('''
+                        SELECT DISTINCT s.employee_name, e.position
+                        FROM schedules s
+                        LEFT JOIN employees e ON s.employee_name = e.name
+                        WHERE s.period_id = ? AND (e.is_deleted = 0 OR e.is_deleted IS NULL)
+                        ORDER BY s.employee_name
+                    ''', (period_id,))
+                else:
+                    cursor.execute('''
+                        SELECT DISTINCT employee_name FROM schedules 
+                        WHERE period_id = ? ORDER BY employee_name
+                    ''', (period_id,))
+                
+                employees = [{'name': row[0], 'position': row[1] if len(row) > 1 else ''} for row in cursor.fetchall()]
             
             if not employees:
                 return None
@@ -506,264 +543,45 @@ class ScheduleManager:
         
         return response.get('status') == 'success' or response.get('status') == 'offline'
     
-    def add_employee(self, name):
-        """Добавление сотрудника"""
-        # Проверяем локально
-        all_employees = self._load_employees_from_local(include_deleted=True)
-        for emp in all_employees:
-            if emp["name"].lower() == name.lower():
-                # Если сотрудник удален, восстанавливаем его
-                if emp.get('is_deleted', 0) == 1:
-                    return self.restore_employee(name)
-                return False
-        
-        # Добавляем в локальную БД
+    def update_employee_order(self, period, employees):
+        """Обновление порядка сотрудников для периода"""
         conn = sqlite3.connect(self.local_db)
         cursor = conn.cursor()
         
         try:
-            # Проверяем наличие колонки is_deleted
-            cursor.execute("PRAGMA table_info(employees)")
-            columns = [col[1] for col in cursor.fetchall()]
+            # Удаляем старый порядок
+            cursor.execute("DELETE FROM employee_order WHERE period = ?", (period,))
             
-            if 'is_deleted' in columns:
-                cursor.execute("INSERT INTO employees (name, is_deleted) VALUES (?, 0)", (name,))
-            else:
-                cursor.execute("INSERT INTO employees (name) VALUES (?)", (name,))
-            
-            conn.commit()
-            # Обновляем кэш
-            self._update_employee_caches()
-        except sqlite3.IntegrityError:
-            return False
-        finally:
-            conn.close()
-        
-        # Отправляем на сервер
-        response = self.network_manager.send_request({
-            'action': 'add_employee',
-            'name': name
-        })
-        
-        return True
-    
-    def update_employee(self, old_name, new_name):
-        """Обновление данных сотрудника"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Проверяем, существует ли сотрудник с новым именем
-            cursor.execute("SELECT id FROM employees WHERE name = ? AND name != ?", (new_name, old_name))
-            if cursor.fetchone():
-                return False, "Сотрудник с таким именем уже существует"
-            
-            # Обновляем данные
-            cursor.execute("UPDATE employees SET name = ? WHERE name = ?", (new_name, old_name))
-            
-            # Обновляем все расписания, где упоминается этот сотрудник
-            cursor.execute("UPDATE schedules SET employee_name = ? WHERE employee_name = ?", 
-                         (new_name, old_name))
+            # Сохраняем новый порядок
+            for i, emp_name in enumerate(employees):
+                cursor.execute('''
+                    INSERT INTO employee_order (period, employee_name, sort_order)
+                    VALUES (?, ?, ?)
+                ''', (period, emp_name, i))
             
             conn.commit()
             
             # Обновляем кэш
-            self._update_employee_caches()
+            if period in self._cache:
+                # Обновляем порядок сотрудников в кэше
+                current_data = self._cache[period]
+                # Создаем новый список сотрудников в правильном порядке
+                ordered_employees = []
+                for emp_name in employees:
+                    for emp in current_data['employees']:
+                        if emp['name'] == emp_name:
+                            ordered_employees.append(emp)
+                            break
+                current_data['employees'] = ordered_employees
+                self._cache[period] = current_data
             
-            # Очищаем кэш расписаний, так как имена сотрудников изменились
-            self._cache = {}
-            
-            return True, "Данные сотрудника обновлены"
+            return True
         except Exception as e:
             conn.rollback()
-            return False, f"Ошибка обновления: {str(e)}"
-        finally:
-            conn.close()
-    
-    def delete_employee(self, name):
-        """Помечаем сотрудника как удаленного (мягкое удаление)"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Проверяем наличие колонки is_deleted
-            cursor.execute("PRAGMA table_info(employees)")
-            columns = [col[1] for col in cursor.fetchall()]
-            
-            if 'is_deleted' in columns:
-                cursor.execute("UPDATE employees SET is_deleted = 1 WHERE name = ?", (name,))
-                conn.commit()
-                # Обновляем кэш
-                self._update_employee_caches()
-                return True, "Сотрудник помечен как удаленный"
-            else:
-                return False, "Функция удаления не поддерживается в текущей версии базы данных"
-        except Exception as e:
-            conn.rollback()
-            return False, f"Ошибка удаления: {str(e)}"
-        finally:
-            conn.close()
-    
-    def restore_employee(self, name):
-        """Восстановление удаленного сотрудника"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Проверяем наличие колонки is_deleted
-            cursor.execute("PRAGMA table_info(employees)")
-            columns = [col[1] for col in cursor.fetchall()]
-            
-            if 'is_deleted' in columns:
-                cursor.execute("UPDATE employees SET is_deleted = 0 WHERE name = ?", (name,))
-                conn.commit()
-                # Обновляем кэш
-                self._update_employee_caches()
-                return True, "Сотрудник восстановлен"
-            else:
-                return False, "Функция восстановления не поддерживается в текущей версии базы данных"
-        except Exception as e:
-            conn.rollback()
-            return False, f"Ошибка восстановления: {str(e)}"
-        finally:
-            conn.close()
-    
-    def create_period(self, period, employees):
-        """Создание периода"""
-        # Создаем локальную структуру данных
-        try:
-            year, month = map(int, period.split('-'))
-            days_in_month = monthrange(year, month)[1]
-        except:
-            days_in_month = 31
-        
-        schedule_data = {
-            "employees": [{"name": name} for name in employees],
-            "schedule": {name: [4] * days_in_month for name in employees},
-            "notes": {}
-        }
-        
-        # Сохраняем в локальную БД
-        self._save_schedule_to_local(period, schedule_data)
-        self._cache[period] = schedule_data
-        
-        # Обновляем кэш периодов
-        if period not in self._periods_cache:
-            self._periods_cache.append(period)
-            self._periods_cache.sort()
-        
-        # Отправляем на сервер
-        response = self.network_manager.send_request({
-            'action': 'create_period',
-            'period': period,
-            'employees': employees
-        })
-        
-        return response.get('status') == 'success' or response.get('status') == 'offline'
-    
-    def add_employees_to_period(self, period, employees):
-        """Добавление сотрудников в период"""
-        # Загружаем текущее расписание
-        current_data = self.load_schedule(period)
-        if not current_data:
+            print(f"Ошибка обновления порядка сотрудников: {e}")
             return False
-        
-        # Добавляем новых сотрудников
-        for emp_name in employees:
-            if emp_name not in [emp["name"] for emp in current_data["employees"]]:
-                current_data["employees"].append({"name": emp_name})
-                current_data["schedule"][emp_name] = [4] * 31  # 31 день по умолчанию
-        
-        # Сохраняем в локальную БД
-        self._save_schedule_to_local(period, current_data)
-        self._cache[period] = current_data
-        
-        # Отправляем на сервер
-        response = self.network_manager.send_request({
-            'action': 'add_employees_to_period',
-            'period': period,
-            'employees': employees
-        })
-        
-        return response.get('status') == 'success' or response.get('status') == 'offline'
-    
-    def sync_with_server(self):
-        """Синхронизация данных с сервером"""
-        if not self.network_manager.connected:
-            return False
-        
-        # Собираем все локальные данные для синхронизации
-        sync_data = {
-            'employees': [emp for emp in self._load_employees_from_local(include_deleted=False)],
-            'periods': self._load_periods_from_local(),
-            'schedules': []
-        }
-        
-        # Добавляем расписания всех периодов
-        for period in sync_data['periods']:
-            schedule_data = self.load_schedule(period)
-            if schedule_data:
-                sync_data['schedules'].append({
-                    'period': period,
-                    'schedule': schedule_data['schedule'],
-                    'notes': schedule_data.get('notes', {})
-                })
-        
-        # Отправляем на сервер
-        response = self.network_manager.send_request({
-            'action': 'sync_data',
-            'data': sync_data
-        })
-        
-        return response.get('status') == 'success'
-    
-    def _load_employees_from_local(self, include_deleted=False):
-        """Загрузка сотрудников из локальной БД"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Проверяем наличие колонки is_deleted
-            cursor.execute("PRAGMA table_info(employees)")
-            columns = [col[1] for col in cursor.fetchall()]
-            
-            if 'is_deleted' in columns:
-                if include_deleted:
-                    cursor.execute("SELECT name, position, is_deleted FROM employees")
-                else:
-                    cursor.execute("SELECT name, position FROM employees WHERE is_deleted = 0")
-            else:
-                # Если колонки нет, получаем всех сотрудников
-                cursor.execute("SELECT name, position FROM employees")
-            
-            employees = []
-            for row in cursor.fetchall():
-                if include_deleted and 'is_deleted' in columns:
-                    emp = {'name': row[0], 'position': row[1], 'is_deleted': row[2]}
-                else:
-                    emp = {'name': row[0], 'position': row[1]}
-                employees.append(emp)
-            return employees
-        except Exception as e:
-            print(f"Ошибка загрузки сотрудников: {e}")
-            return []
         finally:
             conn.close()
-    
-    def save_schedule(self, period, data):
-        """Сохранение расписания на сервер и в локальную БД"""
-        # Всегда сохраняем в локальную БД
-        self._save_schedule_to_local(period, data)
-        self._cache[period] = data
-        
-        # Отправляем на сервер
-        response = self.network_manager.send_request({
-            'action': 'save_schedule',
-            'period': period,
-            'data': data
-        })
-        
-        return response.get('status') == 'success' or response.get('status') == 'offline'
     
     def add_employee(self, name):
         """Добавление сотрудника"""
@@ -823,6 +641,10 @@ class ScheduleManager:
             
             # Обновляем все расписания, где упоминается этот сотрудник
             cursor.execute("UPDATE schedules SET employee_name = ? WHERE employee_name = ?", 
+                         (new_name, old_name))
+            
+            # Обновляем порядок сотрудников
+            cursor.execute("UPDATE employee_order SET employee_name = ? WHERE employee_name = ?", 
                          (new_name, old_name))
             
             conn.commit()
@@ -966,6 +788,39 @@ class ScheduleManager:
         })
         
         return response.get('status') == 'success'
+    
+    def _load_employees_from_local(self, include_deleted=False):
+        """Загрузка сотрудников из локальной БД"""
+        conn = sqlite3.connect(self.local_db)
+        cursor = conn.cursor()
+        
+        try:
+            # Проверяем наличие колонки is_deleted
+            cursor.execute("PRAGMA table_info(employees)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'is_deleted' in columns:
+                if include_deleted:
+                    cursor.execute("SELECT name, position, is_deleted FROM employees")
+                else:
+                    cursor.execute("SELECT name, position FROM employees WHERE is_deleted = 0")
+            else:
+                # Если колонки нет, получаем всех сотрудников
+                cursor.execute("SELECT name, position FROM employees")
+            
+            employees = []
+            for row in cursor.fetchall():
+                if include_deleted and 'is_deleted' in columns:
+                    emp = {'name': row[0], 'position': row[1], 'is_deleted': row[2]}
+                else:
+                    emp = {'name': row[0], 'position': row[1]}
+                employees.append(emp)
+            return employees
+        except Exception as e:
+            print(f"Ошибка загрузки сотрудников: {e}")
+            return []
+        finally:
+            conn.close()
 
 
 class ConnectionDialog(QDialog):
@@ -1382,6 +1237,7 @@ class MonthWidget(QWidget):
         self.parent_app = parent  # Сохраняем ссылку на главное приложение
         self.db = db
         self.current_period = None
+        self.sunday_columns = []  # Список индексов колонок воскресений
         self.initUI()
     
     def initUI(self):
@@ -1426,6 +1282,30 @@ class MonthWidget(QWidget):
         
         top_layout.addWidget(month_label)
         top_layout.addWidget(self.period_combo)
+        
+        # Кнопка для изменения порядка сотрудников
+        self.order_btn = QPushButton("↑↓")
+        self.order_btn.setFixedHeight(22)
+        self.order_btn.setFixedWidth(22)
+        self.order_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #808080;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 400;
+            }
+            QPushButton:hover {
+                background-color: #696969;
+            }
+            QPushButton:pressed {
+                background-color: #505050;
+            }
+        """)
+        self.order_btn.clicked.connect(self.change_employee_order)
+        top_layout.addWidget(self.order_btn)
+        
         top_layout.addStretch()
         
         layout.addLayout(top_layout)
@@ -1457,6 +1337,118 @@ class MonthWidget(QWidget):
         font.setBold(True)
         font.setPointSize(10)
         table.verticalHeader().setFont(font)
+    
+    def change_employee_order(self):
+        """Изменение порядка сотрудников в таблице"""
+        if not self.current_period:
+            return
+        
+        # Получаем текущий список сотрудников
+        current_employees = []
+        for row in range(self.table.rowCount()):
+            item = self.table.verticalHeaderItem(row)
+            if item:
+                current_employees.append(item.text())
+        
+        if not current_employees:
+            return
+        
+        # Создаем диалог для изменения порядка
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Изменение порядка сотрудников")
+        dialog.setModal(True)
+        dialog.setMinimumSize(400, 500)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Создаем список с возможностью перетаскивания
+        list_widget = QListWidget()
+
+        list_widget.setStyleSheet("""
+            QListWidget {
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                padding: 2px;
+            }
+            QListWidget::item {
+                padding: 5px;
+                border-bottom: 1px solid #eee;
+            }
+            QListWidget::item:selected {
+                color: black;                   
+                background-color: #e0e0e0;
+            }
+            QListWidget::item:hover {
+                background-color: #f5f5f5;
+            }
+        """)
+        
+        # Устанавливаем режим перетаскивания, который позволяет только перемещать между позициями
+        list_widget.setDragDropMode(QListWidget.InternalMove)
+        
+        # Отключаем возможность выбора нескольких элементов
+        list_widget.setSelectionMode(QListWidget.SingleSelection)
+        
+        for emp in current_employees:
+            item = QListWidgetItem(emp)
+            # Устанавливаем флаги только для перетаскивания, без возможности наложения
+            item.setFlags(item.flags() | Qt.ItemIsDragEnabled)
+            list_widget.addItem(item)
+        
+        layout.addWidget(list_widget)
+        
+        # Добавляем инструкцию
+        instruction_label = QLabel("Перетащите сотрудника в нужную позицию между другими сотрудниками")
+        instruction_label.setWordWrap(True)
+        instruction_label.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+        layout.addWidget(instruction_label)
+        
+        # Кнопки для ручного перемещения (дополнительная опция)
+        move_buttons_layout = QHBoxLayout()
+        
+        move_up_btn = QPushButton("↑")
+        move_up_btn.clicked.connect(lambda: self.move_employee_up(list_widget))
+        move_buttons_layout.addWidget(move_up_btn)
+        
+        move_down_btn = QPushButton("↓")
+        move_down_btn.clicked.connect(lambda: self.move_employee_down(list_widget))
+        move_buttons_layout.addWidget(move_down_btn)
+        
+        layout.addLayout(move_buttons_layout)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            # Получаем новый порядок сотрудников
+            new_order = []
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                new_order.append(item.text())
+            
+            # Обновляем порядок в базе данных
+            if self.db.update_employee_order(self.current_period, new_order):
+                # Обновляем отображение таблицы
+                self.load_data(self.current_period)
+                self.parent_app.set_unsaved_changes(True)
+
+    def move_employee_up(self, list_widget):
+        """Переместить выбранного сотрудника вверх"""
+        current_row = list_widget.currentRow()
+        if current_row > 0:
+            current_item = list_widget.takeItem(current_row)
+            list_widget.insertItem(current_row - 1, current_item)
+            list_widget.setCurrentRow(current_row - 1)
+
+    def move_employee_down(self, list_widget):
+        """Переместить выбранного сотрудника вниз"""
+        current_row = list_widget.currentRow()
+        if current_row >= 0 and current_row < list_widget.count() - 1:
+            current_item = list_widget.takeItem(current_row)
+            list_widget.insertItem(current_row + 1, current_item)
+            list_widget.setCurrentRow(current_row + 1)
     
     def load_periods(self):
         periods = self.db.periods
@@ -1525,7 +1517,19 @@ class MonthWidget(QWidget):
         self.table.setRowCount(len(employees_in_period))
         self.table.setColumnCount(days_in_month + 4)  # +4 для итоговых столбцов
         
-        self.table.setVerticalHeaderLabels([emp["name"] for emp in employees_in_period])
+        # Сохраняем информацию о воскресеньях
+        self.sunday_columns = []
+        for col, actual_day in enumerate(day_mapping):
+            try:
+                day_of_week = datetime(year, month, actual_day).weekday()
+                if day_of_week == 6:  # Воскресенье
+                    self.sunday_columns.append(col)
+            except:
+                pass
+        
+        # Устанавливаем заголовки строк (сотрудники)
+        for row, emp in enumerate(employees_in_period):
+            self.table.setVerticalHeaderItem(row, QTableWidgetItem(emp["name"]))
         
         notes_data = schedule_data.get('notes', {})
         
@@ -1571,8 +1575,40 @@ class MonthWidget(QWidget):
         # Применяем текущий масштаб после загрузки данных
         self.apply_scale(self.parent_app.current_scale)
         
+        # Обновляем стиль заголовков
+        self.update_header_style()
+        
         self.table.viewport().update()
-
+    
+    def update_header_style(self):
+        """Обновляет стиль заголовков таблицы"""
+        if not self.sunday_columns:
+            # Если нет воскресных колонок, сбрасываем стиль
+            self.table.horizontalHeader().setStyleSheet("")
+            return
+        
+        # Создаем CSS стиль для воскресных заголовков
+        style_sheet = ""
+        for col in range(self.table.columnCount()):
+            if col in self.sunday_columns:
+                style_sheet += f"""
+                    QHeaderView::section:nth-child({col + 1}) {{
+                        background-color: #FFCCCC;
+                        color: black;
+                        font-weight: bold;
+                    }}
+                """
+            else:
+                style_sheet += f"""
+                    QHeaderView::section:nth-child({col + 1}) {{
+                        background-color: white;
+                        color: black;
+                    }}
+                """
+        
+        # Применяем стиль к заголовку таблицы
+        self.table.horizontalHeader().setStyleSheet(style_sheet)
+    
     def hours_to_hours_minutes(self, total_hours):
         """Конвертирует дробное количество часов в часы и минуты"""
         hours = int(total_hours)
@@ -1583,7 +1619,7 @@ class MonthWidget(QWidget):
             minutes = 0
             
         return hours, minutes
-
+    
     def update_counters(self):
         if not self.current_period or self.table.is_loading:
             return
@@ -1592,9 +1628,16 @@ class MonthWidget(QWidget):
             year, month = map(int, self.current_period.split('-'))
             days_in_month = monthrange(year, month)[1]
             day_mapping = list(range(1, days_in_month + 1))
+            is_sunday_mapping = []
+            
+            for day in range(1, days_in_month + 1):
+                is_sunday = datetime(year, month, day).weekday() == 6
+                is_sunday_mapping.append(is_sunday)
+                
         except:
             days_in_month = self.table.columnCount() - 4
             day_mapping = list(range(1, days_in_month + 1))
+            is_sunday_mapping = [False] * days_in_month
         
         working_counts = [0] * days_in_month
         
@@ -1605,6 +1648,10 @@ class MonthWidget(QWidget):
             total_hours = 0.0
             
             for col in range(days_in_month):
+                is_sunday = is_sunday_mapping[col]
+                if is_sunday:
+                    continue  # В воскресенье никто не работает
+                    
                 item = self.table.item(row, col)
                 if item:
                     bg_color = item.background().color()
@@ -1695,7 +1742,20 @@ class MonthWidget(QWidget):
         
         headers = day_headers + ["Смены", "Рег", "КЦ", "Часы"]
         self.table.setHorizontalHeaderLabels(headers)
-
+        
+        # Обновляем список воскресных колонок
+        self.sunday_columns = []
+        for col, actual_day in enumerate(day_mapping):
+            try:
+                day_of_week = datetime(year, month, actual_day).weekday()
+                if day_of_week == 6:  # Воскресенье
+                    self.sunday_columns.append(col)
+            except:
+                pass
+        
+        # Обновляем стиль заголовков
+        self.update_header_style()
+    
     def show_context_menu(self, pos):
         table = self.table
         selected = table.selectedIndexes()
@@ -1955,6 +2015,9 @@ class MonthWidget(QWidget):
         
         # Обновляем отображение
         self.table.viewport().update()
+        
+        # Обновляем стиль заголовков после изменения масштаба
+        self.update_header_style()
 
 
 class EmployeeSelectionDialog(QDialog):
@@ -2696,7 +2759,9 @@ class ScheduleApp(QMainWindow):
         if self.unsaved_changes and self.last_change_time and (datetime.now() - self.last_change_time).total_seconds() >= 300:
             self.statusBar().showMessage("Автоматическое сохранение...", 2000)
             self.save_data()
-
+            # Обновляем метку времени
+            self.update_last_save_time()
+    
     def show_refresh_status(self):
         """Показать статус обновления с сервера"""
         if not self.network_manager.connected:
@@ -2709,51 +2774,51 @@ class ScheduleApp(QMainWindow):
         
         try:
             # Принудительно обновляем кэши
-            self.db._employees = []  # Сбрасываем кэш сотрудников
-            self.db._all_employees = []  # Сбрасываем кэш всех сотрудников
-            self.db._periods_cache = []    # Сбрасываем кэш периодов
-            self.db._cache = {}      # Сбрасываем кэш расписаний
-            
-            # Загружаем обновленные данные
-            employees = self.db.load_employees()
-            periods = self.db.get_periods()
-            
-            # Обновляем комбо-боксы периодов
-            self.month_widget1.load_periods()
-            self.month_widget2.load_periods()
-            
-            # Восстанавливаем выбранные периоды
-            if current_period1:
-                index = self.month_widget1.period_combo.findData(current_period1)
-                if index >= 0:
-                    self.month_widget1.period_combo.setCurrentIndex(index)
-            
-            if current_period2:
-                index = self.month_widget2.period_combo.findData(current_period2)
-                if index >= 0:
-                    self.month_widget2.period_combo.setCurrentIndex(index)
-            
-            # Рассчитываем разницу во времени
-            current_time = datetime.now()
-            hours = current_time.hour
-            minutes = current_time.minute
-            
-            if self.last_save_time:
-                time_diff = current_time - self.last_save_time
-                total_minutes = time_diff.seconds // 60
-                hours_diff = total_minutes // 60
-                minutes_diff = total_minutes % 60
+                self.db._employees = []  # Сбрасываем кэш сотрудников
+                self.db._all_employees = []  # Сбрасываем кэш всех сотрудников
+                self.db._periods_cache = []    # Сбрасываем кэш периодов
+                self.db._cache = {}      # Сбрасываем кэш расписаний
                 
-                if hours_diff > 0:
-                    status_message = f"Данные обновлены с сервера. Последнее сохранение {hours_diff} ч. {minutes_diff} мин. назад"
+                # Загружаем обновленные данные
+                employees = self.db.load_employees()
+                periods = self.db.get_periods()
+                
+                # Обновляем комбо-боксы периодов
+                self.month_widget1.load_periods()
+                self.month_widget2.load_periods()
+                
+                # Восстанавливаем выбранные периоды
+                if current_period1:
+                    index = self.month_widget1.period_combo.findData(current_period1)
+                    if index >= 0:
+                        self.month_widget1.period_combo.setCurrentIndex(index)
+                
+                if current_period2:
+                    index = self.month_widget2.period_combo.findData(current_period2)
+                    if index >= 0:
+                        self.month_widget2.period_combo.setCurrentIndex(index)
+                
+                # Рассчитываем разницу во времени
+                current_time = datetime.now()
+                hours = current_time.hour
+                minutes = current_time.minute
+                
+                if self.last_save_time:
+                    time_diff = current_time - self.last_save_time
+                    total_minutes = time_diff.seconds // 60
+                    hours_diff = total_minutes // 60
+                    minutes_diff = total_minutes % 60
+                    
+                    if hours_diff > 0:
+                        status_message = f"Данные обновлены с сервера. Последнее сохранение {hours_diff} ч. {minutes_diff} мин. назад"
+                    else:
+                        status_message = f"Данные обновлены с сервера. Последнее сохранение {minutes_diff} мин. назад"
                 else:
-                    status_message = f"Данные обновлены с сервера. Последнее сохранение {minutes_diff} мин. назад"
-            else:
-                status_message = f"Данные обновлены с сервера в {hours:02d}:{minutes:02d}"
-            
-            # Показываем статус обновления внизу
-            self.statusBar().showMessage(status_message, 5000)
-            
+                    status_message = f"Данные обновлены с сервера в {hours:02d}:{minutes:02d}"
+                
+                # Показываем статус обновления внизу
+                self.statusBar().showMessage(status_message, 5000)
+                
         except Exception as e:
             self.statusBar().showMessage(f"Ошибка обновления с сервера: {str(e)}", 3000)
 
@@ -2816,14 +2881,6 @@ class ScheduleApp(QMainWindow):
         active_widget = self.get_active_month_widget()
         if active_widget:
             active_widget.update_selected_status(status)
-    
-    def auto_save(self):
-        """Автоматическое сохранение через 5 минут после последнего изменения"""
-        if self.unsaved_changes and self.last_change_time and (datetime.now() - self.last_change_time).total_seconds() >= 300:
-            self.statusBar().showMessage("Автоматическое сохранение...", 2000)
-            self.save_data()
-            # Обновляем метку времени
-            self.update_last_save_time()
     
     def add_employee_dialog(self):
         """Быстрое добавление сотрудника через диалог"""
