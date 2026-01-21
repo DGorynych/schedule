@@ -1230,7 +1230,6 @@ class EmployeeManagerDialog(QDialog):
         else:
             QMessageBox.warning(self, "Ошибка", message)
 
-
 class MonthWidget(QWidget):
     def __init__(self, parent=None, db=None):
         super().__init__(parent)
@@ -1285,14 +1284,14 @@ class MonthWidget(QWidget):
         
         # Кнопка для изменения порядка сотрудников
         self.order_btn = QPushButton("↑↓")
-        self.order_btn.setFixedHeight(22)
-        self.order_btn.setFixedWidth(22)
+        self.order_btn.setFixedHeight(24)
+        self.order_btn.setFixedWidth(24)
         self.order_btn.setStyleSheet("""
             QPushButton {
                 background-color: #808080;
                 color: white;
                 border: none;
-                border-radius: 6px;
+                border-radius: 7px;
                 font-size: 14px;
                 font-weight: 400;
             }
@@ -1300,7 +1299,7 @@ class MonthWidget(QWidget):
                 background-color: #696969;
             }
             QPushButton:pressed {
-                background-color: #505050;
+                transperent: 50%;
             }
         """)
         self.order_btn.clicked.connect(self.change_employee_order)
@@ -3055,7 +3054,9 @@ class ScheduleApp(QMainWindow):
                             working_counts[col] += 1
 
                 total_columns = max_working_days + 5
-                ws.cell(row=start_row, column=1, value=month_name).font = Font(bold=True, size=12)
+                # Настройки теста EXCEL строки с названием месяца
+                ws.cell(row=start_row, column=1, value=month_name).font = Font(bold=True, size=16)
+                ws.cell(row=start_row, column=1, value=month_name).fill = PatternFill(start_color="808080", end_color="808080", fill_type="solid")
                 ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=total_columns)
                 start_row += 1
 
@@ -3111,12 +3112,15 @@ class ScheduleApp(QMainWindow):
                 ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).border = thin_border
 
                 start_row += 1
-
-                ws.column_dimensions['A'].width = 30
                 
+                # Ширина столбцов EXCEL ФИО 
+                ws.column_dimensions['A'].width = 35
+                
+                # Ширина столбцов EXCEL дней
                 for col in range(2, max_working_days + 2):
-                    ws.column_dimensions[get_column_letter(col)].width = 4
+                    ws.column_dimensions[get_column_letter(col)].width = 6
                 
+                # Ширина столбцов EXCEL Смены\Рег\КЦ\Часы
                 ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Смены"])].width = 8
                 ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Рег"])].width = 8
                 ws.column_dimensions[get_column_letter(RESULT_COLUMNS["КЦ"])].width = 8
