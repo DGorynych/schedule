@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget, QTableWidg
                              QVBoxLayout, QCheckBox, QScrollArea, QDialogButtonBox,
                              QShortcut, QTimeEdit, QFormLayout, QGridLayout, QSplitter,
                              QLineEdit, QMenuBar, QTabWidget, QListWidget, QListWidgetItem,
-                             QGroupBox, QSlider)
+                             QGroupBox, QSlider, QRadioButton, QButtonGroup)
 from PyQt5.QtCore import Qt, QSettings, QThread, pyqtSignal, QTime, QDate, QTimer
 from PyQt5.QtGui import QColor, QKeySequence, QFont, QPainter, QIcon
 from calendar import monthrange
@@ -199,6 +199,7 @@ class ScheduleManager:
                 status INTEGER DEFAULT 4,
                 end_time TEXT,
                 worked_hours REAL,
+                note_type TEXT,
                 FOREIGN KEY (period_id) REFERENCES periods (id),
                 UNIQUE(period_id, employee_name, day_index)
             )
@@ -221,6 +222,13 @@ class ScheduleManager:
         except sqlite3.OperationalError:
             # Колонки нет, добавляем
             cursor.execute("ALTER TABLE employees ADD COLUMN is_deleted INTEGER DEFAULT 0")
+        
+        # Добавляем колонку note_type, если ее нет
+        try:
+            cursor.execute("SELECT note_type FROM schedules LIMIT 1")
+        except sqlite3.OperationalError:
+            # Колонки нет, добавляем
+            cursor.execute("ALTER TABLE schedules ADD COLUMN note_type TEXT DEFAULT ''")
         
         conn.commit()
         conn.close()
@@ -406,11 +414,12 @@ class ScheduleManager:
                     
                     cursor.execute('''
                         INSERT OR REPLACE INTO schedules 
-                        (period_id, employee_name, day_index, status, end_time, worked_hours)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        (period_id, employee_name, day_index, status, end_time, worked_hours, note_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         period_id, emp_name, day_index, status,
-                        notes_data.get('end_time'), notes_data.get('worked_hours')
+                        notes_data.get('end_time'), notes_data.get('worked_hours'),
+                        notes_data.get('note_type', '')
                     ))
             
             # Сохраняем порядок сотрудников
@@ -488,7 +497,7 @@ class ScheduleManager:
             
             # Получаем расписание
             cursor.execute('''
-                SELECT employee_name, day_index, status, end_time, worked_hours 
+                SELECT employee_name, day_index, status, end_time, worked_hours, note_type 
                 FROM schedules WHERE period_id = ?
             ''', (period_id,))
             
@@ -496,7 +505,7 @@ class ScheduleManager:
             notes = {}
             
             for row in cursor.fetchall():
-                emp_name, day_index, status, end_time, worked_hours = row
+                emp_name, day_index, status, end_time, worked_hours, note_type = row
                 
                 if emp_name not in schedule:
                     schedule[emp_name] = []
@@ -508,12 +517,13 @@ class ScheduleManager:
                 schedule[emp_name][day_index] = status
                 
                 # Обработка примечаний
-                if end_time or worked_hours:
+                if end_time or worked_hours or note_type:
                     if emp_name not in notes:
                         notes[emp_name] = {}
                     notes[emp_name][str(day_index)] = {
                         'end_time': end_time,
-                        'worked_hours': worked_hours
+                        'worked_hours': worked_hours,
+                        'note_type': note_type
                     }
             
             return {
@@ -700,7 +710,7 @@ class ScheduleManager:
         finally:
             conn.close()
     
-    def create_period(self, period, employees):
+    def create_period(self, period, employees, copy_from=None):
         """Создание периода"""
         # Создаем локальную структуру данных
         try:
@@ -714,6 +724,18 @@ class ScheduleManager:
             "schedule": {name: [4] * days_in_month for name in employees},
             "notes": {}
         }
+        
+        # Если нужно скопировать из другого периода
+        if copy_from:
+            source_data = self.load_schedule(copy_from)
+            if source_data:
+                # Копируем порядок сотрудников (если они есть в исходном периоде)
+                source_employees = [emp['name'] for emp in source_data['employees']]
+                existing_employees = [name for name in employees if name in source_employees]
+                
+                if existing_employees:
+                    # Сохраняем порядок из исходного периода
+                    self.update_employee_order(period, existing_employees)
         
         # Сохраняем в локальную БД
         self._save_schedule_to_local(period, schedule_data)
@@ -888,7 +910,7 @@ class MonthSelectionDialog(QDialog):
         super().__init__(parent) 
         self.setWindowTitle("Выбор месяца и года")
         self.setModal(True)
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(350)
         
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -908,7 +930,7 @@ class MonthSelectionDialog(QDialog):
         grid_layout.addWidget(self.year_combo, 0, 1)
         
         # Месяц
-        grid_layout.addWidget(QLabel("Месец:"), 1, 0)
+        grid_layout.addWidget(QLabel("Месяц:"), 1, 0)
         self.month_combo = QComboBox()
         month_names = {
             1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
@@ -919,6 +941,11 @@ class MonthSelectionDialog(QDialog):
             self.month_combo.addItem(month_name, month_num)
         self.month_combo.setCurrentIndex(current_date.month() - 1)
         grid_layout.addWidget(self.month_combo, 1, 1)
+        
+        # Поле для ввода названия месяца (для вариантов)
+        grid_layout.addWidget(QLabel("Название:"), 2, 0)
+        self.name_edit = QLineEdit()
+        grid_layout.addWidget(self.name_edit, 2, 1)
         
         layout.addLayout(grid_layout)
         
@@ -931,25 +958,130 @@ class MonthSelectionDialog(QDialog):
         year = self.year_combo.currentData()
         month = self.month_combo.currentData()
         return f"{year}-{month:02d}"
+    
+    def get_period_name(self):
+        """Получение полного названия периода (с вариантом)"""
+        year = self.year_combo.currentData()
+        month = self.month_combo.currentData()
+        month_name = self.month_combo.currentText()
+        custom_name = self.name_edit.text().strip()
+        
+        base_name = f"{month_name} {year}"
+        if custom_name:
+            return f"{base_name} ({custom_name})"
+        return base_name
+
+
+class MonthExistsDialog(QDialog):
+    def __init__(self, period_name, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Месяц уже существует")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+        
+        # Сообщение
+        message_label = QLabel(
+            f"Месяц '{period_name}' уже существует.\n\n"
+            "Хотите создать дополнительный вариант?"
+        )
+        message_label.setWordWrap(True)
+        layout.addWidget(message_label)
+        
+        # Поле для названия варианта
+        form_layout = QFormLayout()
+        self.variant_name_edit = QLineEdit()
+        self.variant_name_edit.setPlaceholderText("Например: Вариант 2, Резервная копия и т.д.")
+        form_layout.addRow("Название варианта:", self.variant_name_edit)
+        layout.addLayout(form_layout)
+        
+        # Кнопки
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.Yes | QDialogButtonBox.No | QDialogButtonBox.Cancel
+        )
+        button_box.button(QDialogButtonBox.Yes).setText("Создать вариант")
+        button_box.button(QDialogButtonBox.No).setText("Перейти к существующему")
+        button_box.button(QDialogButtonBox.Cancel).setText("Отмена")
+        
+        button_box.accepted.connect(lambda: self.accept_with_action("variant"))
+        button_box.rejected.connect(lambda: self.accept_with_action("existing"))
+        button_box.button(QDialogButtonBox.Cancel).clicked.connect(self.reject)
+        
+        layout.addWidget(button_box)
+    
+    def accept_with_action(self, action):
+        self.action = action
+        super().accept()
+    
+    def get_variant_name(self):
+        return self.variant_name_edit.text().strip()
+    
+    def get_action(self):
+        return getattr(self, 'action', 'cancel')
 
 
 class NoteDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, current_end_time="20:00", current_note_type=""):
         super().__init__(parent)
         self.setWindowTitle("Примечание к рабочему дню")
         self.setModal(True)
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(400)
         
         layout = QVBoxLayout()
         self.setLayout(layout)
         
         form_layout = QFormLayout()
         
+        # Время окончания
         self.end_time_edit = QTimeEdit()
-        self.end_time_edit.setTime(QTime(20, 0))
+        try:
+            if current_end_time:
+                hours, minutes = map(int, current_end_time.split(':'))
+                self.end_time_edit.setTime(QTime(hours, minutes))
+            else:
+                self.end_time_edit.setTime(QTime(20, 0))
+        except:
+            self.end_time_edit.setTime(QTime(20, 0))
         self.end_time_edit.setDisplayFormat("HH:mm")
-        
         form_layout.addRow("Время окончания:", self.end_time_edit)
+        
+        # Тип примечания
+        self.note_type_group = QButtonGroup(self)
+        self.note_type_group.setExclusive(True)
+        
+        note_type_layout = QHBoxLayout()
+        
+        self.no_note_radio = QRadioButton("Без примечания")
+        self.no_note_radio.setChecked(True)
+        self.note_type_group.addButton(self.no_note_radio, 0)
+        note_type_layout.addWidget(self.no_note_radio)
+        
+        self.responsible_radio = QRadioButton("Ответственный")
+        self.note_type_group.addButton(self.responsible_radio, 1)
+        note_type_layout.addWidget(self.responsible_radio)
+        
+        self.dms_radio = QRadioButton("ДМС")
+        self.note_type_group.addButton(self.dms_radio, 2)
+        note_type_layout.addWidget(self.dms_radio)
+        
+        # Добавляем новую кнопку для "Нежелание работать"
+        self.no_desire_radio = QRadioButton("Нежелание работать")
+        self.note_type_group.addButton(self.no_desire_radio, 3)
+        note_type_layout.addWidget(self.no_desire_radio)
+        
+        form_layout.addRow("Тип примечания:", note_type_layout)
+        
+        # Устанавливаем текущее значение
+        if current_note_type == 'о':
+            self.responsible_radio.setChecked(True)
+        elif current_note_type == 'д':
+            self.dms_radio.setChecked(True)
+        elif current_note_type == '*':
+            self.no_desire_radio.setChecked(True)
+        else:
+            self.no_note_radio.setChecked(True)
         
         layout.addLayout(form_layout)
         
@@ -960,6 +1092,16 @@ class NoteDialog(QDialog):
     
     def get_end_time(self):
         return self.end_time_edit.time().toString("HH:mm")
+    
+    def get_note_type(self):
+        if self.responsible_radio.isChecked():
+            return 'о'
+        elif self.dms_radio.isChecked():
+            return 'д'
+        elif self.no_desire_radio.isChecked():
+            return '*'
+        else:
+            return ''
 
 
 class NoteTableWidget(QTableWidget):
@@ -967,6 +1109,8 @@ class NoteTableWidget(QTableWidget):
         super().__init__(parent)
         self.parent_widget = parent  # Сохраняем ссылку на родительский виджет
         self.is_loading = False
+        self.cut_data = None  # Для хранения вырезанных данных
+        self.copied_data = None  # Для хранения скопированных данных
     
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -983,6 +1127,96 @@ class NoteTableWidget(QTableWidget):
             # Исправляем обращение к главному окну
             if hasattr(self.parent_widget, 'parent') and hasattr(self.parent_widget.parent, 'set_unsaved_changes'):
                 self.parent_widget.parent.set_unsaved_changes(True)
+    
+    def paste_selected(self):
+        """Вставка данных из буфера обмена"""
+        # Получаем данные из cut_data или copied_data
+        if hasattr(self, 'cut_data') and self.cut_data:
+            data_to_paste = self.cut_data
+            cut_mode = True
+        elif hasattr(self.parent_widget, 'copied_data') and self.parent_widget.copied_data:
+            data_to_paste = self.parent_widget.copied_data
+            cut_mode = False
+        else:
+            return
+        
+        selected = self.selectedIndexes()
+        if not selected:
+            return
+        
+        # Находим верхнюю левую ячейку выделения
+        min_row = min(index.row() for index in selected)
+        min_col = min(index.column() for index in selected)
+        
+        for row_offset, row_data in enumerate(data_to_paste):
+            for col_offset, (status, note_data) in enumerate(row_data):
+                target_row = min_row + row_offset
+                target_col = min_col + col_offset
+                
+                # Проверяем границы таблицы
+                if target_row >= self.rowCount() or target_col >= self.columnCount() - 4:
+                    continue
+                
+                item = self.item(target_row, target_col)
+                if item and target_col < self.columnCount() - 4:
+                    icon, _, bg_color, _ = self.parent_widget.parent_app.status_mapping.get(
+                        status, ("", "Пусто", QColor(Qt.white), 0)
+                    )
+                    
+                    has_note = bool(note_data)
+                    
+                    new_item = NoteItem("", has_note, note_data)
+                    new_item.setTextAlignment(Qt.AlignCenter)
+                    new_item.setBackground(bg_color)
+                    new_item.setForeground(Qt.black)
+                    
+                    # Обновляем текст если есть примечание
+                    if has_note:
+                        end_time = note_data.get('end_time', '')
+                        note_type = note_data.get('note_type', '')
+                        
+                        # Форматируем текст
+                        if note_type:
+                            if end_time and end_time != '20:00':
+                                hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                                new_item.setText(f"{hour_part}-{note_type}")
+                            else:
+                                new_item.setText(note_type)
+                        else:
+                            if end_time and end_time != '20:00':
+                                hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                                new_item.setText(f"{hour_part}.")
+                            else:
+                                new_item.setText("")
+                        
+                        new_item.setData(Qt.UserRole, True)
+                        
+                        # Создаем всплывающую подсказку
+                        tooltip_parts = []
+                        if note_data.get('worked_hours'):
+                            tooltip_parts.append(f"Отработано: {note_data.get('worked_hours', 12)} часов")
+                        if note_type == 'о':
+                            tooltip_parts.append("Ответственный")
+                        elif note_type == 'д':
+                            tooltip_parts.append("ДМС")
+                        elif note_type == '*':
+                            tooltip_parts.append("Нежелание работать")
+                        
+                        if tooltip_parts:
+                            new_item.setToolTip("\n".join(tooltip_parts))
+                    else:
+                        new_item.setText("")
+                    
+                    self.setItem(target_row, target_col, new_item)
+        
+        # Если был режим "вырезать", очищаем данные
+        if cut_mode:
+            self.cut_data = None
+        
+        # Обновляем счетчики и статус изменений
+        self.parent_widget.update_counters()
+        if hasattr(self.parent_widget, 'parent_app') and hasattr(self.parent_widget.parent_app, 'set_unsaved_changes'):
+            self.parent_widget.parent_app.set_unsaved_changes(True)
 
 
 class NoteItem(QTableWidgetItem):
@@ -1085,7 +1319,7 @@ class EmployeeManagerDialog(QDialog):
             item.setData(Qt.UserRole, emp)
             self.active_list.addItem(item)
         
-        # Удаленные сотрудники
+        # Удаленные сотрудников
         self.deleted_list.clear()
         all_employees = self.db.load_employees(include_deleted=True)
         deleted_employees = [emp for emp in all_employees if emp.get('is_deleted', 0) == 1]
@@ -1230,6 +1464,166 @@ class EmployeeManagerDialog(QDialog):
         else:
             QMessageBox.warning(self, "Ошибка", message)
 
+
+class NewPeriodDialog(QDialog):
+    """Диалог создания нового периода с опцией копирования сотрудников"""
+    def __init__(self, parent=None, db=None, selected_period=None):
+        super().__init__(parent)
+        self.db = db
+        self.selected_period = selected_period
+        self.setWindowTitle("Создание нового месяца")
+        self.setModal(True)
+        self.setMinimumWidth(450)
+        
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+        
+        # Информация о выбранном периоде
+        if selected_period:
+            try:
+                year, month = map(int, selected_period.split('-'))
+                month_name = parent.month_names[month] if hasattr(parent, 'month_names') else f"Месяц {month}"
+                period_info = QLabel(f"Создается месяц: {month_name} {year}")
+                period_info.setStyleSheet("font-weight: bold; font-size: 12px; padding: 5px;")
+                layout.addWidget(period_info)
+            except:
+                pass
+        
+        # Опция копирования сотрудников
+        self.copy_checkbox = QCheckBox("Скопировать сотрудников из...")
+        self.copy_checkbox.setChecked(True)
+        self.copy_checkbox.stateChanged.connect(self.on_copy_changed)
+        layout.addWidget(self.copy_checkbox)
+        
+        # Выбор источника для копирования
+        copy_options_layout = QHBoxLayout()
+        copy_options_layout.setContentsMargins(20, 0, 0, 0)  # Отступ для вложенности
+        
+        self.prev_month_radio = QRadioButton("предыдущего месяца")
+        self.prev_month_radio.setChecked(True)
+        copy_options_layout.addWidget(self.prev_month_radio)
+        
+        self.specific_month_radio = QRadioButton("определённого месяца:")
+        copy_options_layout.addWidget(self.specific_month_radio)
+        
+        self.source_combo = QComboBox()
+        self.source_combo.setEnabled(False)
+        
+        # Заполняем список периодов
+        periods = self.db.periods if self.db else []
+        for period in periods:
+            self.source_combo.addItem(period, period)
+        
+        copy_options_layout.addWidget(self.source_combo)
+        copy_options_layout.addStretch()
+        
+        layout.addLayout(copy_options_layout)
+        
+        # Связываем радио-кнопки
+        self.prev_month_radio.toggled.connect(self.on_source_changed)
+        self.specific_month_radio.toggled.connect(self.on_source_changed)
+        
+        layout.addSpacing(10)
+        
+        # Область выбора сотрудников (изначально отключена)
+        self.employee_frame = QGroupBox("Выбор сотрудников")
+        self.employee_frame.setEnabled(False)
+        employee_layout = QVBoxLayout(self.employee_frame)
+        
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        self.content = QWidget()
+        self.scroll_layout = QVBoxLayout(self.content)
+        
+        self.checkboxes = []
+        employees = self.db.employees if self.db else []
+        for emp in employees:
+            cb = QCheckBox(emp["name"])
+            cb.setChecked(True)
+            self.checkboxes.append((emp["name"], cb))
+            self.scroll_layout.addWidget(cb)
+        
+        scroll.setWidget(self.content)
+        employee_layout.addWidget(scroll)
+        
+        btn_layout = QHBoxLayout()
+        self.select_all_btn = QPushButton("Выбрать все")
+        self.select_all_btn.clicked.connect(lambda: self.set_all_checkboxes(True))
+        btn_layout.addWidget(self.select_all_btn)
+        
+        self.deselect_all_btn = QPushButton("Снять все")
+        self.deselect_all_btn.clicked.connect(lambda: self.set_all_checkboxes(False))
+        btn_layout.addWidget(self.deselect_all_btn)
+        
+        employee_layout.addLayout(btn_layout)
+        
+        layout.addWidget(self.employee_frame)
+        
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+        # Применяем начальное состояние
+        self.on_copy_changed()
+    
+    def on_copy_changed(self):
+        """Обработка изменения состояния чекбокса копирования"""
+        if self.copy_checkbox.isChecked():
+            self.employee_frame.setEnabled(False)
+            self.prev_month_radio.setEnabled(True)
+            self.specific_month_radio.setEnabled(True)
+            self.source_combo.setEnabled(self.specific_month_radio.isChecked())
+        else:
+            self.employee_frame.setEnabled(True)
+            self.prev_month_radio.setEnabled(False)
+            self.specific_month_radio.setEnabled(False)
+            self.source_combo.setEnabled(False)
+    
+    def on_source_changed(self):
+        """Обработка изменения источника копирования"""
+        self.source_combo.setEnabled(self.specific_month_radio.isChecked())
+    
+    def set_all_checkboxes(self, state):
+        """Установка состояния всех чекбоксов"""
+        for _, cb in self.checkboxes:
+            cb.setChecked(state)
+    
+    def get_selected_employees(self):
+        """Получение выбранных сотрудников"""
+        if self.copy_checkbox.isChecked():
+            # Если копирование включено, возвращаем None
+            return None
+        else:
+            # Иначе возвращаем выбранных сотрудников
+            return [name for name, cb in self.checkboxes if cb.isChecked()]
+    
+    def get_copy_source(self):
+        """Получение источника для копирования"""
+        if not self.copy_checkbox.isChecked():
+            return None
+        
+        if self.prev_month_radio.isChecked():
+            # Получаем предыдущий месяц относительно создаваемого
+            periods = self.db.periods if self.db else []
+            if not periods:
+                return None
+            
+            # Находим индекс текущего периода в списке
+            try:
+                current_index = periods.index(self.selected_period)
+                if current_index > 0:
+                    return periods[current_index - 1]
+            except:
+                pass
+            
+            # Если не нашли или это первый месяц, берем последний из списка
+            return periods[-1] if periods else None
+        else:
+            # Копирование из выбранного месяца
+            return self.source_combo.currentData()
+
+
 class MonthWidget(QWidget):
     def __init__(self, parent=None, db=None):
         super().__init__(parent)
@@ -1237,6 +1631,7 @@ class MonthWidget(QWidget):
         self.db = db
         self.current_period = None
         self.sunday_columns = []  # Список индексов колонок воскресений
+        self.copied_data = None  # Для хранения скопированных данных
         self.initUI()
     
     def initUI(self):
@@ -1454,13 +1849,36 @@ class MonthWidget(QWidget):
         self.period_combo.clear()
         
         if periods:
-            for period in periods:
+            # Сортируем периоды: сначала по году, затем по месяцу, затем по варианту
+            def sort_key(period):
+                # Извлекаем базовую часть и вариант
+                base_part = period
+                variant = ""
+                if ' (' in period:
+                    base_part = period.split(' (')[0]
+                    variant = period.split(' (')[1].rstrip(')')
+                
+                # Парсим базовую часть (например "Январь 2026")
                 try:
-                    year, month = map(int, period.split('-'))
-                    month_name = f"{self.parent_app.month_names[month]} {year}"
-                    self.period_combo.addItem(month_name, period)
+                    month_name, year = base_part.rsplit(' ', 1)
+                    year = int(year)
+                    
+                    # Получаем номер месяца
+                    month_num = 1
+                    for num, name in self.parent_app.month_names.items():
+                        if name == month_name:
+                            month_num = num
+                            break
+                    
+                    # Сортируем по году, месяцу и варианту
+                    return (year, month_num, variant)
                 except:
-                    self.period_combo.addItem(period)
+                    return (0, 0, period)
+            
+            sorted_periods = sorted(periods, key=sort_key)
+            
+            for period in sorted_periods:
+                self.period_combo.addItem(period, period)
             
             # Автоматически выбираем первый период, если он не выбран
             if self.period_combo.count() > 0 and not self.current_period:
@@ -1496,16 +1914,30 @@ class MonthWidget(QWidget):
             self.table.is_loading = False
             return
         
+        # Извлекаем базовую дату из названия периода
         try:
-            year, month = map(int, period.split('-'))
-            days_in_month = monthrange(year, month)[1]
+            base_name = period
+            if ' (' in period:
+                base_name = period.split(' (')[0]
+            
+            month_name, year = base_name.rsplit(' ', 1)
+            year = int(year)
+            
+            # Получаем номер месяца
+            month_num = 1
+            for num, name in self.parent_app.month_names.items():
+                if name == month_name:
+                    month_num = num
+                    break
+            
+            days_in_month = monthrange(year, month_num)[1]
             day_mapping = []  # Массив для хранения всех дней
             is_sunday_mapping = []  # Массив для хранения информации о воскресеньях
             
             for day in range(1, days_in_month + 1):
                 day_mapping.append(day)
                 # Определяем, является ли день воскресеньем
-                is_sunday = datetime(year, month, day).weekday() == 6
+                is_sunday = datetime(year, month_num, day).weekday() == 6
                 is_sunday_mapping.append(is_sunday)
                 
         except:
@@ -1520,7 +1952,7 @@ class MonthWidget(QWidget):
         self.sunday_columns = []
         for col, actual_day in enumerate(day_mapping):
             try:
-                day_of_week = datetime(year, month, actual_day).weekday()
+                day_of_week = datetime(year, month_num, actual_day).weekday()
                 if day_of_week == 6:  # Воскресенье
                     self.sunday_columns.append(col)
             except:
@@ -1553,16 +1985,46 @@ class MonthWidget(QWidget):
                 has_note = note_key in emp_notes
                 note_data = emp_notes.get(note_key, {})
                 
-                item = NoteItem(icon, has_note, note_data)
+                item = NoteItem("", has_note, note_data)
                 item.setTextAlignment(Qt.AlignCenter)
                 item.setBackground(bg_color)
                 item.setForeground(Qt.black)
                 
                 if has_note and not is_sunday:  # Примечания не показываем для воскресений
                     end_time = note_data.get('end_time', '20:00')
-                    item.setText(end_time)
+                    note_type = note_data.get('note_type', '')
+                    
+                    # Форматируем текст в зависимости от типа примечания
+                    if note_type:
+                        if end_time and end_time != '20:00':
+                            # Извлекаем час из времени
+                            hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                            item.setText(f"{hour_part}-{note_type}")
+                        else:
+                            item.setText(note_type)
+                    else:
+                        if end_time and end_time != '20:00':
+                            # Извлекаем час из времени
+                            hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                            item.setText(f"{hour_part}.")
+                        else:
+                            item.setText("")
+                    
                     item.setData(Qt.UserRole, True)
-                    item.setToolTip(f"Отработано: {note_data.get('worked_hours', 12)} часов")
+                    
+                    # Создаем всплывающую подсказку
+                    tooltip_parts = []
+                    if note_data.get('worked_hours'):
+                        tooltip_parts.append(f"Отработано: {note_data.get('worked_hours', 12)} часов")
+                    if note_type == 'о':
+                        tooltip_parts.append("Ответственный")
+                    elif note_type == 'д':
+                        tooltip_parts.append("ДМС")
+                    elif note_type == '*':
+                        tooltip_parts.append("Нежелание работать")
+                    
+                    if tooltip_parts:
+                        item.setToolTip("\n".join(tooltip_parts))
                 else:
                     item.setText("")
                 
@@ -1623,14 +2085,28 @@ class MonthWidget(QWidget):
         if not self.current_period or self.table.is_loading:
             return
         
+        # Извлекаем базовую дату из названия периода
         try:
-            year, month = map(int, self.current_period.split('-'))
-            days_in_month = monthrange(year, month)[1]
+            base_name = self.current_period
+            if ' (' in self.current_period:
+                base_name = self.current_period.split(' (')[0]
+            
+            month_name, year = base_name.rsplit(' ', 1)
+            year = int(year)
+            
+            # Получаем номер месяца
+            month_num = 1
+            for num, name in self.parent_app.month_names.items():
+                if name == month_name:
+                    month_num = num
+                    break
+            
+            days_in_month = monthrange(year, month_num)[1]
             day_mapping = list(range(1, days_in_month + 1))
             is_sunday_mapping = []
             
             for day in range(1, days_in_month + 1):
-                is_sunday = datetime(year, month, day).weekday() == 6
+                is_sunday = datetime(year, month_num, day).weekday() == 6
                 is_sunday_mapping.append(is_sunday)
                 
         except:
@@ -1675,6 +2151,11 @@ class MonthWidget(QWidget):
                             total_hours += item.note_data.get('worked_hours', 12)
                         else:
                             total_hours += self.parent_app.status_mapping[1][3]
+                    elif isinstance(item, NoteItem) and item.has_note:
+                        # Для нерабочих дней с примечаниями учитываем отработанные часы
+                        worked_hours = item.note_data.get('worked_hours', 0)
+                        if worked_hours > 0:
+                            total_hours += worked_hours
             
             hours, minutes = self.hours_to_hours_minutes(total_hours)
             
@@ -1725,7 +2206,7 @@ class MonthWidget(QWidget):
         day_headers = []
         for col, actual_day in enumerate(day_mapping):
             try:
-                day_of_week = datetime(year, month, actual_day).weekday()
+                day_of_week = datetime(year, month_num, actual_day).weekday()
                 day_name = self.parent_app.day_names[day_of_week]
                 
                 # Определяем цвет для воскресенья
@@ -1746,7 +2227,7 @@ class MonthWidget(QWidget):
         self.sunday_columns = []
         for col, actual_day in enumerate(day_mapping):
             try:
-                day_of_week = datetime(year, month, actual_day).weekday()
+                day_of_week = datetime(year, month_num, actual_day).weekday()
                 if day_of_week == 6:  # Воскресенье
                     self.sunday_columns.append(col)
             except:
@@ -1767,6 +2248,10 @@ class MonthWidget(QWidget):
         copy_action.triggered.connect(self.copy_selected)
         menu.addAction(copy_action)
         
+        cut_action = QAction("Вырезать", self)
+        cut_action.triggered.connect(self.cut_selected)
+        menu.addAction(cut_action)
+        
         paste_action = QAction("Вставить", self)
         paste_action.triggered.connect(self.paste_selected)
         menu.addAction(paste_action)
@@ -1780,14 +2265,26 @@ class MonthWidget(QWidget):
                 
                 # Проверяем, является ли это воскресеньем
                 try:
-                    year, month = map(int, self.current_period.split('-'))
+                    base_name = self.current_period
+                    if ' (' in self.current_period:
+                        base_name = self.current_period.split(' (')[0]
+                    
+                    month_name, year = base_name.rsplit(' ', 1)
+                    year = int(year)
+                    
+                    month_num = 1
+                    for num, name in self.parent_app.month_names.items():
+                        if name == month_name:
+                            month_num = num
+                            break
+                    
                     actual_day = index.column() + 1
-                    is_sunday = datetime(year, month, actual_day).weekday() == 6
+                    is_sunday = datetime(year, month_num, actual_day).weekday() == 6
                 except:
                     is_sunday = False
                 
                 # Не позволяем добавлять примечания к воскресеньям
-                if not is_sunday and item and item.background().color() in [self.parent_app.status_mapping[0][2], self.parent_app.status_mapping[1][2]]:
+                if not is_sunday and item:
                     if isinstance(item, NoteItem) and item.has_note:
                         remove_note_action = QAction("Удалить примечание", self)
                         remove_note_action.triggered.connect(lambda: self.remove_note(index))
@@ -1808,29 +2305,99 @@ class MonthWidget(QWidget):
     
     def add_note(self, index):
         item = self.table.item(index.row(), index.column())
-        if not item or item.background().color() not in [self.parent_app.status_mapping[0][2], self.parent_app.status_mapping[1][2]]:
+        
+        # Проверяем, является ли это воскресеньем
+        try:
+            base_name = self.current_period
+            if ' (' in self.current_period:
+                base_name = self.current_period.split(' (')[0]
+            
+            month_name, year = base_name.rsplit(' ', 1)
+            year = int(year)
+            
+            month_num = 1
+            for num, name in self.parent_app.month_names.items():
+                if name == month_name:
+                    month_num = num
+                    break
+            
+            actual_day = index.column() + 1
+            is_sunday = datetime(year, month_num, actual_day).weekday() == 6
+            if is_sunday:
+                QMessageBox.warning(self, "Ошибка", "Нельзя добавлять примечания к воскресеньям")
+                return
+        except:
+            pass
+        
+        if not item:
             return
         
-        dialog = NoteDialog(self)
+        current_end_time = ""
+        current_note_type = ""
+        if isinstance(item, NoteItem) and item.has_note:
+            current_end_time = item.note_data.get('end_time', '')
+            current_note_type = item.note_data.get('note_type', '')
+        
+        dialog = NoteDialog(self, current_end_time, current_note_type)
         if dialog.exec_() == QDialog.Accepted:
             end_time = dialog.get_end_time()
+            note_type = dialog.get_note_type()
             
-            end_hour = int(end_time.split(':')[0])
-            minutes = int(end_time.split(':')[1])
-            worked_hours = end_hour - 8 + (minutes / 60.0)
+            # Для нерабочих дней устанавливаем отработанные часы = 0
+            bg_color = item.background().color()
+            if bg_color in [self.parent_app.status_mapping[2][2],  # Не работает
+                            self.parent_app.status_mapping[3][2],  # Отпуск
+                            self.parent_app.status_mapping[4][2]]: # Пусто
+                worked_hours = 0.0
+            elif end_time:
+                end_hour = int(end_time.split(':')[0])
+                minutes = int(end_time.split(':')[1])
+                worked_hours = end_hour - 8 + (minutes / 60.0)
+            else:
+                worked_hours = 12  # Значение по умолчанию для рабочих дней
             
             if isinstance(item, NoteItem):
                 item.has_note = True
                 item.note_data = {
                     'end_time': end_time,
-                    'worked_hours': round(worked_hours, 2)
+                    'worked_hours': round(worked_hours, 2),
+                    'note_type': note_type
                 }
-                item.setText(end_time)
+                
+                # Форматируем текст в зависимости от типа примечания
+                if note_type:
+                    if end_time and end_time != '20:00':
+                        # Извлекаем час из времени
+                        hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                        item.setText(f"{hour_part}-{note_type}")
+                    else:
+                        item.setText(note_type)
+                else:
+                    if end_time and end_time != '20:00':
+                        # Извлекаем час из времени
+                        hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                        item.setText(f"{hour_part}.")
+                    else:
+                        item.setText("")
+                
                 item.setData(Qt.UserRole, True)
-                item.setToolTip(f"Отработано: {round(worked_hours, 2)} часов")
+                
+                # Создаем всплывающую подсказку
+                tooltip_parts = []
+                if item.note_data.get('worked_hours'):
+                    tooltip_parts.append(f"Отработано: {item.note_data.get('worked_hours', 12)} часов")
+                if note_type == 'о':
+                    tooltip_parts.append("Ответственный")
+                elif note_type == 'д':
+                    tooltip_parts.append("ДМС")
+                elif note_type == '*':
+                    tooltip_parts.append("Нежелание работать")
+                
+                if tooltip_parts:
+                    item.setToolTip("\n".join(tooltip_parts))
+                
                 self.table.viewport().update()
                 self.update_counters()
-                # Исправляем обращение к главному окну
                 if hasattr(self, 'parent_app') and hasattr(self.parent_app, 'set_unsaved_changes'):
                     self.parent_app.set_unsaved_changes(True)
     
@@ -1844,15 +2411,15 @@ class MonthWidget(QWidget):
             item.setToolTip("")
             self.table.viewport().update()
             self.update_counters()
-            # Исправляем обращение к главному окну
             if hasattr(self, 'parent_app') and hasattr(self.parent_app, 'set_unsaved_changes'):
                 self.parent_app.set_unsaved_changes(True)
     
     def copy_selected(self):
+        """Копирование выделенных ячеек"""
         selected = self.table.selectedIndexes()
         if not selected:
             return
-            
+        
         rows = defaultdict(list)
         for index in selected:
             rows[index.row()].append(index.column())
@@ -1860,29 +2427,89 @@ class MonthWidget(QWidget):
         self.copied_data = []
         for row, cols in rows.items():
             row_data = []
-            for col in cols:
+            for col in sorted(cols):
+                if col >= self.table.columnCount() - 4:
+                    continue  # Пропускаем итоговые столбцы
+                
                 item = self.table.item(row, col)
                 bg_color = item.background().color() if item else QColor(Qt.white)
-                status = next((k for k, v in self.parent_app.status_mapping.items() if v[2] == bg_color), 4)
-                row_data.append(status)
-            self.copied_data.append(row_data)
+                status = next((k for k, v in self.parent_app.status_mapping.items() 
+                             if v[2] == bg_color), 4)
+                
+                note_data = {}
+                if isinstance(item, NoteItem) and item.has_note:
+                    note_data = item.note_data.copy()
+                
+                row_data.append((status, note_data))
+            
+            if row_data:
+                self.copied_data.append(row_data)
+    
+    def cut_selected(self):
+        """Вырезание выделенных ячеек"""
+        selected = self.table.selectedIndexes()
+        if not selected:
+            return
+        
+        # Группируем ячейки по строкам
+        rows = defaultdict(list)
+        for index in selected:
+            rows[index.row()].append(index.column())
+        
+        # Сохраняем данные
+        self.copied_data = []
+        for row, cols in rows.items():
+            row_data = []
+            for col in sorted(cols):
+                if col >= self.table.columnCount() - 4:
+                    continue  # Пропускаем итоговые столбцы
+                
+                item = self.table.item(row, col)
+                bg_color = item.background().color() if item else QColor(Qt.white)
+                status = next((k for k, v in self.parent_app.status_mapping.items() 
+                             if v[2] == bg_color), 4)
+                
+                note_data = {}
+                if isinstance(item, NoteItem) and item.has_note:
+                    note_data = item.note_data.copy()
+                
+                row_data.append((status, note_data))
+                
+                # Очищаем ячейку
+                if item and col < self.table.columnCount() - 4:
+                    icon, _, bg_color, _ = self.parent_app.status_mapping.get(4, ("", "Пусто", QColor(Qt.white), 0))
+                    new_item = NoteItem("", False, {})
+                    new_item.setTextAlignment(Qt.AlignCenter)
+                    new_item.setBackground(bg_color)
+                    new_item.setForeground(Qt.black)
+                    self.table.setItem(row, col, new_item)
+            
+            if row_data:
+                self.copied_data.append(row_data)
+        
+        self.update_counters()
+        if hasattr(self, 'parent_app') and hasattr(self.parent_app, 'set_unsaved_changes'):
+            self.parent_app.set_unsaved_changes(True)
     
     def paste_selected(self):
-        if not hasattr(self, 'copied_data') or not self.copied_data:
+        """Вставка данных из буфера обмена"""
+        if not self.copied_data:
             return
             
         selected = self.table.selectedIndexes()
         if not selected:
             return
-            
+        
+        # Находим верхнюю левую ячейку выделения
         min_row = min(index.row() for index in selected)
         min_col = min(index.column() for index in selected)
         
         for row_offset, row_data in enumerate(self.copied_data):
-            for col_offset, status in enumerate(row_data):
+            for col_offset, (status, note_data) in enumerate(row_data):
                 target_row = min_row + row_offset
                 target_col = min_col + col_offset
                 
+                # Проверяем границы таблицы
                 if target_row >= self.table.rowCount() or target_col >= self.table.columnCount() - 4:
                     continue
                 
@@ -1890,28 +2517,53 @@ class MonthWidget(QWidget):
                 if item and target_col < self.table.columnCount() - 4:
                     icon, _, bg_color, _ = self.parent_app.status_mapping.get(status, ("", "Пусто", QColor(Qt.white), 0))
                     
-                    old_has_note = False
-                    old_note_data = {}
-                    if isinstance(item, NoteItem):
-                        old_has_note = item.has_note
-                        old_note_data = item.note_data
+                    has_note = bool(note_data)
                     
-                    new_item = NoteItem("", old_has_note, old_note_data)
+                    new_item = NoteItem("", has_note, note_data)
                     new_item.setTextAlignment(Qt.AlignCenter)
                     new_item.setBackground(bg_color)
                     new_item.setForeground(Qt.black)
                     
-                    if old_has_note:
-                        new_item.setText(old_note_data.get('end_time', '20:00'))
+                    # Обновляем текст если есть примечание
+                    if has_note:
+                        end_time = note_data.get('end_time', '')
+                        note_type = note_data.get('note_type', '')
+                        
+                        # Форматируем текст
+                        if note_type:
+                            if end_time and end_time != '20:00':
+                                hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                                new_item.setText(f"{hour_part}-{note_type}")
+                            else:
+                                new_item.setText(note_type)
+                        else:
+                            if end_time and end_time != '20:00':
+                                hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                                new_item.setText(f"{hour_part}.")
+                            else:
+                                new_item.setText("")
+                        
                         new_item.setData(Qt.UserRole, True)
-                        new_item.setToolTip(f"Отработано: {old_note_data.get('worked_hours', 12)} часов")
+                        
+                        # Создаем всплывающую подсказку
+                        tooltip_parts = []
+                        if note_data.get('worked_hours'):
+                            tooltip_parts.append(f"Отработано: {note_data.get('worked_hours', 12)} часов")
+                        if note_type == 'о':
+                            tooltip_parts.append("Ответственный")
+                        elif note_type == 'д':
+                            tooltip_parts.append("ДМС")
+                        elif note_type == '*':
+                            tooltip_parts.append("Нежелание работать")
+                        
+                        if tooltip_parts:
+                            new_item.setToolTip("\n".join(tooltip_parts))
                     else:
                         new_item.setText("")
                     
                     self.table.setItem(target_row, target_col, new_item)
         
         self.update_counters()
-        # Исправляем обращение к главному окну
         if hasattr(self, 'parent_app') and hasattr(self.parent_app, 'set_unsaved_changes'):
             self.parent_app.set_unsaved_changes(True)
     
@@ -1928,9 +2580,21 @@ class MonthWidget(QWidget):
             
             # Проверяем, является ли это воскресеньем
             try:
-                year, month = map(int, self.current_period.split('-'))
+                base_name = self.current_period
+                if ' (' in self.current_period:
+                    base_name = self.current_period.split(' (')[0]
+                
+                month_name, year = base_name.rsplit(' ', 1)
+                year = int(year)
+                
+                month_num = 1
+                for num, name in self.parent_app.month_names.items():
+                    if name == month_name:
+                        month_num = num
+                        break
+                
                 actual_day = index.column() + 1
-                is_sunday = datetime(year, month, actual_day).weekday() == 6
+                is_sunday = datetime(year, month_num, actual_day).weekday() == 6
             except:
                 is_sunday = False
             
@@ -1952,9 +2616,40 @@ class MonthWidget(QWidget):
                 new_item.setForeground(Qt.black)
                 
                 if old_has_note:
-                    new_item.setText(old_note_data.get('end_time', '20:00'))
+                    end_time = old_note_data.get('end_time', '')
+                    note_type = old_note_data.get('note_type', '')
+                    
+                    # Форматируем текст в зависимости от типа примечания
+                    if note_type:
+                        if end_time and end_time != '20:00':
+                            # Извлекаем час из времени
+                            hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                            new_item.setText(f"{hour_part}-{note_type}")
+                        else:
+                            new_item.setText(note_type)
+                    else:
+                        if end_time and end_time != '20:00':
+                            # Извлекаем час из времени
+                            hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                            new_item.setText(f"{hour_part}.")
+                        else:
+                            new_item.setText("")
+                    
                     new_item.setData(Qt.UserRole, True)
-                    new_item.setToolTip(f"Отработано: {old_note_data.get('worked_hours', 12)} часов")
+                    
+                    # Создаем всплывающую подсказку
+                    tooltip_parts = []
+                    if old_note_data.get('worked_hours'):
+                        tooltip_parts.append(f"Отработано: {old_note_data.get('worked_hours', 12)} часов")
+                    if note_type == 'о':
+                        tooltip_parts.append("Ответственный")
+                    elif note_type == 'д':
+                        tooltip_parts.append("ДМС")
+                    elif note_type == '*':
+                        tooltip_parts.append("Нежелание работать")
+                    
+                    if tooltip_parts:
+                        new_item.setToolTip("\n".join(tooltip_parts))
                 else:
                     new_item.setText("")
                 
@@ -2149,6 +2844,9 @@ class ScheduleApp(QMainWindow):
         # Добавляем переменную для текущего масштаба
         self.current_scale = self.settings.value("scale", 100, type=int)
         
+        # Загружаем последние открытые месяцы
+        self.last_opened_periods = self.settings.value("last_opened_periods", [], type=list)
+        
         self.export_folder = self.settings.value("export_folder", "")
         
         # Настройки подключения
@@ -2218,7 +2916,7 @@ class ScheduleApp(QMainWindow):
         employees_menu = menubar.addMenu('Сотрудники')
         
         # Пункт "Управление сотрудниками"
-        manage_employees_action = QAction('Управление сотрудниками', self)
+        manage_employees_action = QAction('Управление сотрудники', self)
         manage_employees_action.triggered.connect(self.show_employee_manager)
         employees_menu.addAction(manage_employees_action)
         
@@ -2556,20 +3254,39 @@ class ScheduleApp(QMainWindow):
         self.month_widget2.load_periods()
         
         periods = self.db.periods
+        
         if periods:
-            self.month_widget1.period_combo.setCurrentIndex(0)
-            if len(periods) > 1:
-                self.month_widget2.period_combo.setCurrentIndex(len(periods) - 1)
+            # Восстанавливаем последние открытые месяцы
+            if self.last_opened_periods and len(self.last_opened_periods) >= 2:
+                period1 = self.last_opened_periods[0]
+                period2 = self.last_opened_periods[1]
+                
+                # Проверяем, существуют ли сохраненные периоды в текущем списке
+                index1 = self.month_widget1.period_combo.findData(period1)
+                index2 = self.month_widget2.period_combo.findData(period2)
+                
+                if index1 >= 0:
+                    self.month_widget1.period_combo.setCurrentIndex(index1)
+                else:
+                    self.month_widget1.period_combo.setCurrentIndex(0)
+                
+                if index2 >= 0:
+                    self.month_widget2.period_combo.setCurrentIndex(index2)
+                else:
+                    self.month_widget2.period_combo.setCurrentIndex(min(1, len(periods) - 1))
             else:
-                self.month_widget2.period_combo.setCurrentIndex(0)
+                # Если нет сохраненных периодов, используем первый и последний
+                self.month_widget1.period_combo.setCurrentIndex(0)
+                if len(periods) > 1:
+                    self.month_widget2.period_combo.setCurrentIndex(len(periods) - 1)
+                else:
+                    self.month_widget2.period_combo.setCurrentIndex(0)
         
         # Применяем сохраненный масштаб
         self.apply_scale(self.current_scale)
     
     def refresh_data(self):
         """Обновление данных с сервера"""
-        # Просто вызываем show_refresh_status для обновления данных
-        self.show_refresh_status()
         # Сохраняем текущие выбранные периоды
         current_period1 = self.month_widget1.current_period
         current_period2 = self.month_widget2.current_period
@@ -2583,26 +3300,30 @@ class ScheduleApp(QMainWindow):
                 self.db._periods_cache = []    # Сбрасываем кэш периодов
                 self.db._cache = {}      # Сбрасываем кэш расписаний
                 
-                # Загружаем обновленные данные
+                # Загружаем обновленные данные с сервера
                 employees = self.db.load_employees()
-                periods = self.db.get_periods()
+                periods = self.db.get_periods()  # Эта функция сама загружает с сервера
                 
                 # Обновляем комбо-боксы периодов
                 self.month_widget1.load_periods()
                 self.month_widget2.load_periods()
                 
-                # Восстанавливаем выбранные периоды
+                # Восстанавливаем выбранные периоды и ОБНОВЛЯЕМ данные таблиц
                 if current_period1:
                     index = self.month_widget1.period_combo.findData(current_period1)
                     if index >= 0:
                         self.month_widget1.period_combo.setCurrentIndex(index)
+                    # Обновляем данные таблицы для первого виджета
+                    self.month_widget1.load_data(current_period1)
                 
                 if current_period2:
                     index = self.month_widget2.period_combo.findData(current_period2)
                     if index >= 0:
                         self.month_widget2.period_combo.setCurrentIndex(index)
+                    # Обновляем данные таблицы для второго виджета
+                    self.month_widget2.load_data(current_period2)
                 
-                # ОБНОВЛЯЕМ МЕТКУ ВРЕМЕНИ (рассчитываем разницу)
+                # Обновляем метку времени (рассчитываем разницу)
                 current_time = datetime.now()
                 hours = current_time.hour
                 minutes = current_time.minute
@@ -2631,43 +3352,151 @@ class ScheduleApp(QMainWindow):
         dialog = MonthSelectionDialog(self)
         if dialog.exec_() == QDialog.Accepted:
             selected_period = dialog.get_selected_period()
+            period_name = dialog.get_period_name()
             
             # Проверяем, существует ли уже такой период
             existing_periods = [self.month_widget1.period_combo.itemData(i) for i in range(self.month_widget1.period_combo.count())]
-            if selected_period in existing_periods:
-                self.statusBar().showMessage("Этот месяц уже существует", 3000)
-                return
             
-            self.create_new_period(selected_period)
+            # Функция для проверки существования периода
+            def period_exists(period_to_check):
+                # Проверяем базовое название без варианта
+                for existing_period in existing_periods:
+                    # Извлекаем базовую часть до скобок
+                    base_part = existing_period
+                    if ' (' in existing_period:
+                        base_part = existing_period.split(' (')[0]
+                    
+                    # Извлекаем базовую часть из проверяемого периода
+                    base_check = period_to_check
+                    if ' (' in period_to_check:
+                        base_check = period_to_check.split(' (')[0]
+                    
+                    if base_check == base_part:
+                        return True
+                return False
+            
+            if period_exists(period_name):
+                # Месяц уже существует, предлагаем создать вариант
+                exists_dialog = MonthExistsDialog(period_name, self)
+                result = exists_dialog.exec_()
+                
+                if result == QDialog.Accepted:
+                    action = exists_dialog.get_action()
+                    
+                    if action == 'variant':
+                        # Создаем вариант
+                        variant_name = exists_dialog.get_variant_name()
+                        if not variant_name:
+                            variant_name = "Вариант 2"
+                        
+                        # Формируем полное название с вариантом
+                        if ' (' in period_name:
+                            base_name = period_name.split(' (')[0]
+                            full_period_name = f"{base_name} ({variant_name})"
+                        else:
+                            full_period_name = f"{period_name} ({variant_name})"
+                        
+                        # Создаем период с новым названием
+                        self.create_period_with_dialog(selected_period, full_period_name)
+                        
+                    elif action == 'existing':
+                        # Переходим к существующему месяцу
+                        self.select_existing_period(period_name)
+                        return
+                else:
+                    # Отмена
+                    return
+            else:
+                # Месяц не существует, создаем обычным образом
+                self.create_period_with_dialog(selected_period, period_name)
 
-    def create_new_period(self, period):
-        """Создает новый период с выбранными сотрудниками"""
-        dialog = EmployeeSelectionDialog(self.db.employees, self)
-        if dialog.exec_() == QDialog.Accepted:
-            selected_names = dialog.get_selected_employees()
-            if not selected_names:
+    def select_existing_period(self, period_name):
+        """Переход к существующему периоду"""
+        # Ищем точное совпадение
+        index = self.month_widget1.period_combo.findText(period_name)
+        if index >= 0:
+            self.month_widget1.period_combo.setCurrentIndex(index)
+            self.statusBar().showMessage(f"Перешли к существующему месяцу: {period_name}", 3000)
+            return
+        
+        # Если точного совпадения нет, ищем базовое название
+        for i in range(self.month_widget1.period_combo.count()):
+            item_text = self.month_widget1.period_combo.itemText(i)
+            if ' (' in item_text:
+                base_text = item_text.split(' (')[0]
+                if base_text == period_name:
+                    self.month_widget1.period_combo.setCurrentIndex(i)
+                    self.statusBar().showMessage(f"Перешли к существующему месяцу: {item_text}", 3000)
+                    return
+        
+        self.statusBar().showMessage("Не удалось найти существующий месяц", 3000)
+
+    def create_period_with_dialog(self, period_id, period_name):
+        """Создание периода с диалогом выбора сотрудников"""
+        # Открываем диалог создания нового периода с опцией копирования
+        new_period_dialog = NewPeriodDialog(self, self.db, period_id)
+        if new_period_dialog.exec_() == QDialog.Accepted:
+            selected_names = new_period_dialog.get_selected_employees()
+            copy_source = new_period_dialog.get_copy_source()
+            
+            if copy_source:
+                # Копируем сотрудников из источника
+                source_data = self.db.load_schedule(copy_source)
+                if source_data:
+                    selected_names = [emp["name"] for emp in source_data["employees"]]
+                else:
+                    self.statusBar().showMessage(f"Не удалось загрузить данные из периода {copy_source}", 3000)
+                    return
+            elif not selected_names:
                 self.statusBar().showMessage("Не выбрано ни одного сотрудника", 3000)
                 return
             
-            # Создаем период
-            if self.db.create_period(period, selected_names):
-                self.statusBar().showMessage(f"Период {period} создан и синхронизирован с сервером", 3000)
+            # Создаем период с указанным названием
+            if self.db.create_period(period_id, selected_names, copy_source):
+                # Обновляем название периода в базе данных
+                self.update_period_name(period_id, period_name)
+                
+                self.statusBar().showMessage(f"Период '{period_name}' создан и синхронизирован с сервером", 3000)
             else:
-                self.statusBar().showMessage(f"Период {period} создан локально, будет синхронизирован при подключении", 3000)
+                self.statusBar().showMessage(f"Период '{period_name}' создан локально, будет синхронизирован при подключении", 3000)
             
             # Обновляем комбо-боксы в обоих виджетах
             self.month_widget1.load_periods()
             self.month_widget2.load_periods()
             
             # Устанавливаем новый период в первый виджет
-            try:
-                year, month = map(int, period.split('-'))
-                month_name = f"{self.month_names[month]} {year}"
-                index = self.month_widget1.period_combo.findText(month_name)
-                if index >= 0:
-                    self.month_widget1.period_combo.setCurrentIndex(index)
-            except:
-                pass
+            index = self.month_widget1.period_combo.findText(period_name)
+            if index >= 0:
+                self.month_widget1.period_combo.setCurrentIndex(index)
+
+    def update_period_name(self, old_period_id, new_period_name):
+        """Обновление названия периода в локальной базе данных"""
+        conn = sqlite3.connect(self.db.local_db)
+        cursor = conn.cursor()
+        
+        try:
+            # Обновляем название периода
+            cursor.execute("UPDATE periods SET period = ? WHERE period = ?", (new_period_name, old_period_id))
+            
+            # Обновляем порядок сотрудников
+            cursor.execute("UPDATE employee_order SET period = ? WHERE period = ?", (new_period_name, old_period_id))
+            
+            conn.commit()
+            
+            # Обновляем кэш периодов
+            if old_period_id in self.db._periods_cache:
+                index = self.db._periods_cache.index(old_period_id)
+                self.db._periods_cache[index] = new_period_name
+            
+            # Обновляем кэш расписаний
+            if old_period_id in self.db._cache:
+                self.db._cache[new_period_name] = self.db._cache.pop(old_period_id)
+                
+        except Exception as e:
+            print(f"Ошибка обновления названия периода: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
     
     def add_employees_to_period(self):
         """Добавляет сотрудников в уже созданный месяц"""
@@ -2773,51 +3602,55 @@ class ScheduleApp(QMainWindow):
         
         try:
             # Принудительно обновляем кэши
-                self.db._employees = []  # Сбрасываем кэш сотрудников
-                self.db._all_employees = []  # Сбрасываем кэш всех сотрудников
-                self.db._periods_cache = []    # Сбрасываем кэш периодов
-                self.db._cache = {}      # Сбрасываем кэш расписаний
+            self.db._employees = []  # Сбрасываем кэш сотрудников
+            self.db._all_employees = []  # Сбрасываем кэш всех сотрудников
+            self.db._periods_cache = []    # Сбрасываем кэш периодов
+            self.db._cache = {}      # Сбрасываем кэш расписаний
+            
+            # Загружаем обновленные данные
+            employees = self.db.load_employees()
+            periods = self.db.get_periods()
+            
+            # Обновляем комбо-боксы периодов
+            self.month_widget1.load_periods()
+            self.month_widget2.load_periods()
+            
+            # Восстанавливаем выбранные периоды и ОБНОВЛЯЕМ ДАННЫЕ ТАБЛИЦ
+            if current_period1:
+                index = self.month_widget1.period_combo.findData(current_period1)
+                if index >= 0:
+                    self.month_widget1.period_combo.setCurrentIndex(index)
+                # ОБНОВЛЯЕМ ДАННЫЕ ТАБЛИЦЫ
+                self.month_widget1.load_data(current_period1)
+            
+            if current_period2:
+                index = self.month_widget2.period_combo.findData(current_period2)
+                if index >= 0:
+                    self.month_widget2.period_combo.setCurrentIndex(index)
+                # ОБНОВЛЯЕМ ДАННЫЕ ТАБЛИЦЫ
+                self.month_widget2.load_data(current_period2)
+            
+            # Рассчитываем разницу во времени
+            current_time = datetime.now()
+            hours = current_time.hour
+            minutes = current_time.minute
+            
+            if self.last_save_time:
+                time_diff = current_time - self.last_save_time
+                total_minutes = time_diff.seconds // 60
+                hours_diff = total_minutes // 60
+                minutes_diff = total_minutes % 60
                 
-                # Загружаем обновленные данные
-                employees = self.db.load_employees()
-                periods = self.db.get_periods()
-                
-                # Обновляем комбо-боксы периодов
-                self.month_widget1.load_periods()
-                self.month_widget2.load_periods()
-                
-                # Восстанавливаем выбранные периоды
-                if current_period1:
-                    index = self.month_widget1.period_combo.findData(current_period1)
-                    if index >= 0:
-                        self.month_widget1.period_combo.setCurrentIndex(index)
-                
-                if current_period2:
-                    index = self.month_widget2.period_combo.findData(current_period2)
-                    if index >= 0:
-                        self.month_widget2.period_combo.setCurrentIndex(index)
-                
-                # Рассчитываем разницу во времени
-                current_time = datetime.now()
-                hours = current_time.hour
-                minutes = current_time.minute
-                
-                if self.last_save_time:
-                    time_diff = current_time - self.last_save_time
-                    total_minutes = time_diff.seconds // 60
-                    hours_diff = total_minutes // 60
-                    minutes_diff = total_minutes % 60
-                    
-                    if hours_diff > 0:
-                        status_message = f"Данные обновлены с сервера. Последнее сохранение {hours_diff} ч. {minutes_diff} мин. назад"
-                    else:
-                        status_message = f"Данные обновлены с сервера. Последнее сохранение {minutes_diff} мин. назад"
+                if hours_diff > 0:
+                    status_message = f"Данные обновлены с сервера. Последнее сохранение {hours_diff} ч. {minutes_diff} мин. назад"
                 else:
-                    status_message = f"Данные обновлены с сервера в {hours:02d}:{minutes:02d}"
-                
-                # Показываем статус обновления внизу
-                self.statusBar().showMessage(status_message, 5000)
-                
+                    status_message = f"Данные обновлены с сервера. Последнее сохранение {minutes_diff} мин. назад"
+            else:
+                status_message = f"Данные обновлены с сервера в {hours:02d}:{minutes:02d}"
+            
+            # Показываем статус обновления внизу
+            self.statusBar().showMessage(status_message, 5000)
+            
         except Exception as e:
             self.statusBar().showMessage(f"Ошибка обновления с сервера: {str(e)}", 3000)
 
@@ -2826,9 +3659,23 @@ class ScheduleApp(QMainWindow):
         if not schedule_data:
             return None
             
+        # Извлекаем базовую дату из названия периода
         try:
-            year, month = map(int, widget.current_period.split('-'))
-            days_in_month = monthrange(year, month)[1]
+            base_name = widget.current_period
+            if ' (' in widget.current_period:
+                base_name = widget.current_period.split(' (')[0]
+            
+            month_name, year = base_name.rsplit(' ', 1)
+            year = int(year)
+            
+            # Получаем номер месяца
+            month_num = 1
+            for num, name in self.month_names.items():
+                if name == month_name:
+                    month_num = num
+                    break
+            
+            days_in_month = monthrange(year, month_num)[1]
             day_mapping = list(range(1, days_in_month + 1))
         except:
             days_in_month = widget.table.columnCount() - 4
@@ -2847,7 +3694,7 @@ class ScheduleApp(QMainWindow):
                 
                 # Проверяем, является ли это воскресеньем
                 try:
-                    is_sunday = datetime(year, month, actual_day).weekday() == 6
+                    is_sunday = datetime(year, month_num, actual_day).weekday() == 6
                 except:
                     is_sunday = False
                 
@@ -2865,10 +3712,10 @@ class ScheduleApp(QMainWindow):
                     
                     full_schedule[day_index] = status
                     
-                    # Сохраняем примечания только для рабочих дней
+                    # Сохраняем примечания для всех дней (кроме воскресений)
                     if not is_sunday and item.has_note:
                         notes[str(day_index)] = item.note_data
-              
+            
             schedule_data["schedule"][emp_name] = full_schedule
             if notes:
                 schedule_data["notes"][emp_name] = notes
@@ -2999,13 +3846,26 @@ class ScheduleApp(QMainWindow):
                 schedule_data = self.db.load_schedule(period)
                 if schedule_data and schedule_data.get('schedule'):
                     has_data = True
+                    # Извлекаем базовую дату из названия периода
                     try:
-                        year, month = map(int, period.split('-'))
-                        days_in_month = monthrange(year, month)[1]
-                        max_working_days = max(max_working_days, days_in_month)
+                        base_name = period
+                        if ' (' in period:
+                            base_name = period.split(' (')[0]
+                        
+                        month_name, year = base_name.rsplit(' ', 1)
+                        year = int(year)
+                        
+                        # Получаем номер месяца
+                        month_num = 1
+                        for num, name in self.month_names.items():
+                            if name == month_name:
+                                month_num = num
+                                break
+                        
+                        days_in_month = monthrange(year, month_num)[1]
                     except:
                         days_in_month = len(next(iter(schedule_data['schedule'].values())))
-                        max_working_days = max(max_working_days, days_in_month)
+                    max_working_days = max(max_working_days, days_in_month)
             
             if not has_data:
                 self.statusBar().showMessage("Нет данных для экспорта", 3000)
@@ -3024,26 +3884,67 @@ class ScheduleApp(QMainWindow):
 
             start_row = 1
 
-            for period in periods:
+            # Сортируем периоды для экспорта
+            def sort_periods_for_export(period_list):
+                def sort_key(p):
+                    base_name = p
+                    variant = ""
+                    if ' (' in p:
+                        base_name = p.split(' (')[0]
+                        variant = p.split(' (')[1].rstrip(')')
+                    
+                    try:
+                        month_name, year = base_name.rsplit(' ', 1)
+                        year = int(year)
+                        
+                        month_num = 1
+                        for num, name in self.month_names.items():
+                            if name == month_name:
+                                month_num = num
+                                break
+                        
+                        return (year, month_num, variant)
+                    except:
+                        return (0, 0, p)
+                
+                return sorted(period_list, key=sort_key)
+            
+            sorted_periods = sort_periods_for_export(periods)
+
+            for period in sorted_periods:
                 schedule_data = self.db.load_schedule(period)
                 if not schedule_data or not schedule_data.get('schedule'):
                     continue
 
-                try:
-                    year, month = map(int, period.split('-'))
-                    month_name = f"{self.month_names[month]} {year}"
-                    days_in_month = monthrange(year, month)[1]
-                    day_mapping = list(range(1, days_in_month + 1))
-                except:
-                    month_name = period
-                    days_in_month = len(next(iter(schedule_data['schedule'].values())))
-                    day_mapping = list(range(1, days_in_month + 1))
-
+                # Используем полное название периода
+                period_name = period
+                
                 employees = schedule_data.get('employees', [])
                 if not employees:
                     continue
 
                 notes_data = schedule_data.get('notes', {})
+
+                # Извлекаем базовую дату для расчета дней
+                try:
+                    base_name = period
+                    if ' (' in period:
+                        base_name = period.split(' (')[0]
+                    
+                    month_name, year = base_name.rsplit(' ', 1)
+                    year = int(year)
+                    
+                    month_num = 1
+                    for num, name in self.month_names.items():
+                        if name == month_name:
+                            month_num = num
+                            break
+                    
+                    days_in_month = monthrange(year, month_num)[1]
+                    day_mapping = list(range(1, days_in_month + 1))
+                except:
+                    days_in_month = len(next(iter(schedule_data['schedule'].values())))
+                    day_mapping = list(range(1, days_in_month + 1))
 
                 working_counts = [0] * days_in_month
                 for emp in employees:
@@ -3055,8 +3956,8 @@ class ScheduleApp(QMainWindow):
 
                 total_columns = max_working_days + 5
                 # Настройки теста EXCEL строки с названием месяца
-                ws.cell(row=start_row, column=1, value=month_name).font = Font(bold=True, size=16)
-                ws.cell(row=start_row, column=1, value=month_name).fill = PatternFill(start_color="808080", end_color="808080", fill_type="solid")
+                ws.cell(row=start_row, column=1, value=period_name).font = Font(bold=True, size=16)
+                ws.cell(row=start_row, column=1, value=period_name).fill = PatternFill(start_color="808080", end_color="808080", fill_type="solid")
                 ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=total_columns)
                 start_row += 1
 
@@ -3068,7 +3969,7 @@ class ScheduleApp(QMainWindow):
 
                 for col, actual_day in enumerate(day_mapping):
                     try:
-                        day_of_week = datetime(year, month, actual_day).weekday()
+                        day_of_week = datetime(year, month_num, actual_day).weekday()
                         day_name = self.day_names[day_of_week]
                         is_sunday = day_of_week == 6
                         
@@ -3160,14 +4061,32 @@ class ScheduleApp(QMainWindow):
                         
                         # Проверяем, является ли это воскресеньем
                         try:
-                            is_sunday = datetime(year, month, actual_day).weekday() == 6
+                            is_sunday = datetime(year, month_num, actual_day).weekday() == 6
                         except:
                             is_sunday = False
                         
-                        # Показываем время окончания только для рабочих дней
+                        # Форматируем текст в зависимости от типа примечания
                         if not is_sunday and str(day_index) in emp_notes:
-                            end_time = emp_notes[str(day_index)].get('end_time', '20:00')
-                            cell.value = end_time
+                            note_data = emp_notes[str(day_index)]
+                            end_time = note_data.get('end_time', '')
+                            note_type = note_data.get('note_type', '')
+                            
+                            if note_type:
+                                if end_time and end_time != '20:00':
+                                    # Извлекаем час из времени
+                                    hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                                    # Записываем в формате "15-о", "10-д", "*"
+                                    cell.value = f"{hour_part}-{note_type}"
+                                else:
+                                    # Записываем просто символ примечания
+                                    cell.value = note_type
+                            else:
+                                if end_time and end_time != '20:00':
+                                    # Извлекаем час из времени
+                                    hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                                    cell.value = f"{hour_part}."
+                                else:
+                                    cell.value = ""
                         else:
                             cell.value = ""
                         
@@ -3309,10 +4228,25 @@ class ScheduleApp(QMainWindow):
         if self.month_widget2:
             self.month_widget2.apply_scale(scale_percent)
     
+    def save_last_opened_periods(self):
+        """Сохранение последних открытых месяцев"""
+        current_periods = []
+        if self.month_widget1.current_period:
+            current_periods.append(self.month_widget1.current_period)
+        if self.month_widget2.current_period:
+            current_periods.append(self.month_widget2.current_period)
+        
+        if current_periods:
+            self.settings.setValue("last_opened_periods", current_periods)
+    
     def closeEvent(self, event):
         """Обработка закрытия окна"""
         # Сохраняем время последнего сохранения
         self.save_last_save_time()
+        
+        # Сохраняем последние открытые месяцы
+        self.save_last_opened_periods()
+        
         event.accept()
 
 

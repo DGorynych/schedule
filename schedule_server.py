@@ -349,7 +349,32 @@ class ScheduleServer:
         """Получение списка периодов"""
         self.cursor.execute("SELECT period FROM periods ORDER BY period")
         periods = [row[0] for row in self.cursor.fetchall()]
-        return {'status': 'success', 'data': periods}
+        
+        # Сортируем периоды: сначала по году, затем по месяцу, затем по варианту
+        def sort_key(period):
+            base_part = period
+            variant = ""
+            if ' (' in period:
+                base_part = period.split(' (')[0]
+                variant = period.split(' (')[1].rstrip(')')
+            
+            try:
+                month_name, year = base_part.rsplit(' ', 1)
+                year = int(year)
+                
+                # Преобразуем название месяца в номер
+                month_names = {
+                    "Январь": 1, "Февраль": 2, "Март": 3, "Апрель": 4,
+                    "Май": 5, "Июнь": 6, "Июль": 7, "Август": 8,
+                    "Сентябрь": 9, "Октябрь": 10, "Ноябрь": 11, "Декабрь": 12
+                }
+                month_num = month_names.get(month_name, 1)
+                
+                return (year, month_num, variant)
+            except:
+                return (0, 0, period)
+        
+        return {'status': 'success', 'data': sorted(periods, key=sort_key)}
     
     def get_schedule(self, period):
         """Получение расписания для периода"""
@@ -467,8 +492,23 @@ class ScheduleServer:
         try:
             # Определяем количество дней в месяце
             try:
-                year, month = map(int, period.split('-'))
-                days_in_month = monthrange(year, month)[1]
+                # Извлекаем базовую дату из названия периода
+                base_name = period
+                if ' (' in period:
+                    base_name = period.split(' (')[0]
+                
+                month_name, year = base_name.rsplit(' ', 1)
+                year = int(year)
+                
+                # Преобразуем название месяца в номер
+                month_names = {
+                    "Январь": 1, "Февраль": 2, "Март": 3, "Апрель": 4,
+                    "Май": 5, "Июнь": 6, "Июль": 7, "Август": 8,
+                    "Сентябрь": 9, "Октябрь": 10, "Ноябрь": 11, "Декабрь": 12
+                }
+                month_num = month_names.get(month_name, 1)
+                
+                days_in_month = monthrange(year, month_num)[1]
             except:
                 days_in_month = 31
             
