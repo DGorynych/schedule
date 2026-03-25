@@ -232,6 +232,13 @@ class ServerSignals(QObject):
     update_clients = pyqtSignal(int)
 
 class ScheduleServer:
+    # Константа для названий месяцев
+    MONTH_NAMES = {
+        "Январь": 1, "Февраль": 2, "Март": 3, "Апрель": 4,
+        "Май": 5, "Июнь": 6, "Июль": 7, "Август": 8,
+        "Сентябрь": 9, "Октябрь": 10, "Ноябрь": 11, "Декабрь": 12
+    }
+    
     def __init__(self, host='0.0.0.0', port=8888):
         self.host = host
         self.port = port
@@ -277,10 +284,23 @@ class ScheduleServer:
                 status INTEGER DEFAULT 4,
                 end_time TEXT,
                 worked_hours REAL,
+                note_type TEXT DEFAULT '',
                 FOREIGN KEY (period_id) REFERENCES periods (id),
                 UNIQUE(period_id, employee_name, day_index)
             )
         ''')
+        
+        # Добавляем колонку note_type, если ее нет (миграция для существующих БД)
+        try:
+            self.cursor.execute("SELECT note_type FROM schedules LIMIT 1")
+        except sqlite3.OperationalError:
+            self.cursor.execute("ALTER TABLE schedules ADD COLUMN note_type TEXT DEFAULT ''")
+        
+        # Добавляем колонку is_deleted в employees, если ее нет
+        try:
+            self.cursor.execute("SELECT is_deleted FROM employees LIMIT 1")
+        except sqlite3.OperationalError:
+            self.cursor.execute("ALTER TABLE employees ADD COLUMN is_deleted INTEGER DEFAULT 0")
         
         self.conn.commit()
     
@@ -334,6 +354,8 @@ class ScheduleServer:
                 return self.add_employees_to_period(request['period'], request['employees'])
             elif action == 'sync_data':
                 return self.sync_data(request['data'])
+            elif action == 'delete_period':
+                return self.delete_period(request['period'])
             else:
                 return {'status': 'error', 'message': 'Неизвестное действие'}
         except Exception as e:
@@ -363,12 +385,7 @@ class ScheduleServer:
                 year = int(year)
                 
                 # Преобразуем название месяца в номер
-                month_names = {
-                    "Январь": 1, "Февраль": 2, "Март": 3, "Апрель": 4,
-                    "Май": 5, "Июнь": 6, "Июль": 7, "Август": 8,
-                    "Сентябрь": 9, "Октябрь": 10, "Ноябрь": 11, "Декабрь": 12
-                }
-                month_num = month_names.get(month_name, 1)
+                month_num = ScheduleServer.MONTH_NAMES.get(month_name, 1)
                 
                 return (year, month_num, variant)
             except:
@@ -390,7 +407,7 @@ class ScheduleServer:
         
         # Получаем расписание
         self.cursor.execute('''
-            SELECT employee_name, day_index, status, end_time, worked_hours 
+            SELECT employee_name, day_index, status, end_time, worked_hours, note_type 
             FROM schedules WHERE period_id = ?
         ''', (period_id,))
         
@@ -398,7 +415,7 @@ class ScheduleServer:
         notes = {}
         
         for row in self.cursor.fetchall():
-            emp_name, day_index, status, end_time, worked_hours = row
+            emp_name, day_index, status, end_time, worked_hours, note_type = row
             
             if emp_name not in schedule:
                 schedule[emp_name] = []
@@ -410,12 +427,13 @@ class ScheduleServer:
             schedule[emp_name][day_index] = status
             
             # Обработка примечаний
-            if end_time or worked_hours:
+            if end_time or worked_hours or note_type:
                 if emp_name not in notes:
                     notes[emp_name] = {}
                 notes[emp_name][str(day_index)] = {
                     'end_time': end_time,
-                    'worked_hours': worked_hours
+                    'worked_hours': worked_hours,
+                    'note_type': note_type or ''
                 }
         
         return {
@@ -447,16 +465,17 @@ class ScheduleServer:
                     if result:
                         # Обновляем существующую запись
                         self.cursor.execute('''
-                            UPDATE schedules SET status = ?, end_time = ?, worked_hours = ?
+                            UPDATE schedules SET status = ?, end_time = ?, worked_hours = ?, note_type = ?
                             WHERE id = ?
-                        ''', (status, notes_data.get('end_time'), notes_data.get('worked_hours'), result[0]))
+                        ''', (status, notes_data.get('end_time'), notes_data.get('worked_hours'), 
+                              notes_data.get('note_type', ''), result[0]))
                     else:
                         # Создаем новую запись
                         self.cursor.execute('''
-                            INSERT INTO schedules (period_id, employee_name, day_index, status, end_time, worked_hours)
-                            VALUES (?, ?, ?, ?, ?, ?)
+                            INSERT INTO schedules (period_id, employee_name, day_index, status, end_time, worked_hours, note_type)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                         ''', (period_id, emp_name, day_index, status, 
-                              notes_data.get('end_time'), notes_data.get('worked_hours')))
+                              notes_data.get('end_time'), notes_data.get('worked_hours'), notes_data.get('note_type', '')))
             
             self.conn.commit()
             return {'status': 'success', 'message': 'Расписание сохранено'}
@@ -501,12 +520,7 @@ class ScheduleServer:
                 year = int(year)
                 
                 # Преобразуем название месяца в номер
-                month_names = {
-                    "Январь": 1, "Февраль": 2, "Март": 3, "Апрель": 4,
-                    "Май": 5, "Июнь": 6, "Июль": 7, "Август": 8,
-                    "Сентябрь": 9, "Октябрь": 10, "Ноябрь": 11, "Декабрь": 12
-                }
-                month_num = month_names.get(month_name, 1)
+                month_num = ScheduleServer.MONTH_NAMES.get(month_name, 1)
                 
                 days_in_month = monthrange(year, month_num)[1]
             except:
@@ -532,9 +546,23 @@ class ScheduleServer:
         period_id = self.get_or_create_period(period)
         
         try:
+            # Определяем количество дней в месяце
+            try:
+                # Извлекаем базовую дату из названия периода
+                base_name = period.split(' (')[0] if ' (' in period else period
+                month_name, year = base_name.rsplit(' ', 1)
+                year = int(year)
+                
+                # Преобразуем название месяца в номер
+                month_num = ScheduleServer.MONTH_NAMES.get(month_name, 1)
+                
+                days_in_month = monthrange(year, month_num)[1]
+            except:
+                days_in_month = 31
+            
             for emp_name in employees:
-                # Создаем пустое расписание на 31 день
-                for day_index in range(31):
+                # Создаем пустое расписание на правильное количество дней
+                for day_index in range(days_in_month):
                     self.cursor.execute('''
                         INSERT OR IGNORE INTO schedules (period_id, employee_name, day_index, status)
                         VALUES (?, ?, ?, ?)
@@ -575,13 +603,37 @@ class ScheduleServer:
                         
                         self.cursor.execute('''
                             INSERT OR REPLACE INTO schedules 
-                            (period_id, employee_name, day_index, status, end_time, worked_hours)
-                            VALUES (?, ?, ?, ?, ?, ?)
+                            (period_id, employee_name, day_index, status, end_time, worked_hours, note_type)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                         ''', (period_id, emp_name, day_index, status,
-                              notes_data.get('end_time'), notes_data.get('worked_hours')))
+                              notes_data.get('end_time'), notes_data.get('worked_hours'), notes_data.get('note_type', '')))
             
             self.conn.commit()
             return {'status': 'success', 'message': 'Данные синхронизированы'}
+        except Exception as e:
+            self.conn.rollback()
+            return {'status': 'error', 'message': str(e)}
+    
+    def delete_period(self, period):
+        """Удаление периода"""
+        try:
+            # Получаем ID периода
+            self.cursor.execute("SELECT id FROM periods WHERE period = ?", (period,))
+            result = self.cursor.fetchone()
+            
+            if not result:
+                return {'status': 'error', 'message': 'Период не найден'}
+            
+            period_id = result[0]
+            
+            # Удаляем расписание
+            self.cursor.execute("DELETE FROM schedules WHERE period_id = ?", (period_id,))
+            
+            # Удаляем период
+            self.cursor.execute("DELETE FROM periods WHERE id = ?", (period_id,))
+            
+            self.conn.commit()
+            return {'status': 'success', 'message': 'Период удален'}
         except Exception as e:
             self.conn.rollback()
             return {'status': 'error', 'message': str(e)}

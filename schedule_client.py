@@ -13,9 +13,9 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QTableWidget, QTableWidg
                              QVBoxLayout, QCheckBox, QScrollArea, QDialogButtonBox,
                              QShortcut, QTimeEdit, QFormLayout, QGridLayout, QSplitter,
                              QLineEdit, QMenuBar, QTabWidget, QListWidget, QListWidgetItem,
-                             QGroupBox, QSlider, QRadioButton, QButtonGroup)
+                             QGroupBox, QSlider, QRadioButton, QButtonGroup, QStyle)
 from PyQt5.QtCore import Qt, QSettings, QThread, pyqtSignal, QTime, QDate, QTimer
-from PyQt5.QtGui import QColor, QKeySequence, QFont, QPainter, QIcon
+from PyQt5.QtGui import QColor, QKeySequence, QFont, QPainter, QIcon, QPixmap, QPen
 from calendar import monthrange
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Alignment, Font, Border, Side
@@ -93,44 +93,39 @@ class NetworkManager:
     
     def save_pending_change(self, request):
         """Сохранение ожидающих изменений в SQLite"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "INSERT INTO pending_changes (action, data) VALUES (?, ?)",
-            (request.get('action'), json.dumps(request))
-        )
-        
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO pending_changes (action, data) VALUES (?, ?)",
+                (request.get('action'), json.dumps(request))
+            )
+            conn.commit()
     
     def load_pending_changes(self):
         """Загрузка и отправка ожидающих изменений из SQLite"""
         if not self.connected:
             return
         
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT id, action, data FROM pending_changes ORDER BY created_at")
-        changes = cursor.fetchall()
-        
-        successful_changes = []
-        
-        for change_id, action, data in changes:
-            request = json.loads(data)
-            response = self.send_request(request)
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, action, data FROM pending_changes ORDER BY created_at")
+            changes = cursor.fetchall()
             
-            if response.get('status') == 'success':
-                successful_changes.append(change_id)
-        
-        # Удаляем успешно отправленные изменения
-        if successful_changes:
-            placeholders = ','.join('?' * len(successful_changes))
-            cursor.execute(f"DELETE FROM pending_changes WHERE id IN ({placeholders})", successful_changes)
-        
-        conn.commit()
-        conn.close()
+            successful_changes = []
+            
+            for change_id, action, data in changes:
+                request = json.loads(data)
+                response = self.send_request(request)
+                
+                if response.get('status') == 'success':
+                    successful_changes.append(change_id)
+            
+            # Удаляем успешно отправленные изменения
+            if successful_changes:
+                placeholders = ','.join('?' * len(successful_changes))
+                cursor.execute(f"DELETE FROM pending_changes WHERE id IN ({placeholders})", successful_changes)
+            
+            conn.commit()
 
 
 class ScheduleManager:
@@ -231,7 +226,6 @@ class ScheduleManager:
             cursor.execute("ALTER TABLE schedules ADD COLUMN note_type TEXT DEFAULT ''")
         
         conn.commit()
-        conn.close()
     
     def load_employees(self, include_deleted=False):
         """Загрузка сотрудников с сервера или из локальной БД"""
@@ -251,31 +245,28 @@ class ScheduleManager:
     
     def _save_employees_to_local(self, employees):
         """Сохранение сотрудников в локальную БД"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Проверяем наличие колонки is_deleted
-            cursor.execute("PRAGMA table_info(employees)")
-            columns = [col[1] for col in cursor.fetchall()]
-            
-            for emp in employees:
-                if 'is_deleted' in columns:
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO employees (name, is_deleted) 
-                        VALUES (?, COALESCE((SELECT is_deleted FROM employees WHERE name = ?), 0))
-                    ''', (emp['name'], emp['name']))
-                else:
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO employees (name) 
-                        VALUES (?)
-                    ''', (emp['name'],))
-            
-            conn.commit()
-        except Exception as e:
-            print(f"Ошибка сохранения сотрудников: {e}")
-        finally:
-            conn.close()
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                # Проверяем наличие колонки is_deleted
+                cursor.execute("PRAGMA table_info(employees)")
+                columns = [col[1] for col in cursor.fetchall()]
+                
+                for emp in employees:
+                    if 'is_deleted' in columns:
+                        cursor.execute('''
+                            INSERT OR REPLACE INTO employees (name, is_deleted) 
+                            VALUES (?, COALESCE((SELECT is_deleted FROM employees WHERE name = ?), 0))
+                        ''', (emp['name'], emp['name']))
+                    else:
+                        cursor.execute('''
+                            INSERT OR REPLACE INTO employees (name) 
+                            VALUES (?)
+                        ''', (emp['name'],))
+                
+                conn.commit()
+            except Exception as e:
+                print(f"Ошибка сохранения сотрудников: {e}")
     
     def _update_employee_caches(self):
         """Обновление кэшей сотрудников"""
@@ -304,8 +295,6 @@ class ScheduleManager:
                 self._all_employees = [{'name': row[0], 'position': row[1], 'is_deleted': 0} for row in cursor.fetchall()]
         except Exception as e:
             print(f"Ошибка обновления кэшей сотрудников: {e}")
-        finally:
-            conn.close()
     
     def _get_employees_from_cache(self, include_deleted=False):
         """Получение сотрудников из кэша"""
@@ -335,35 +324,29 @@ class ScheduleManager:
     
     def _save_periods_to_local(self, periods):
         """Сохранение периодов в локальную БД"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            for period in periods:
-                cursor.execute('''
-                    INSERT OR IGNORE INTO periods (period) VALUES (?)
-                ''', (period,))
-            
-            conn.commit()
-        except Exception as e:
-            print(f"Ошибка сохранения периодов: {e}")
-        finally:
-            conn.close()
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                for period in periods:
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO periods (period) VALUES (?)
+                    ''', (period,))
+                
+                conn.commit()
+            except Exception as e:
+                print(f"Ошибка сохранения периодов: {e}")
     
     def _load_periods_from_local(self):
         """Загрузка периодов из локальной БД"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute("SELECT period FROM periods ORDER BY period")
-            periods = [row[0] for row in cursor.fetchall()]
-            return periods
-        except Exception as e:
-            print(f"Ошибка загрузки периодов: {e}")
-            return []
-        finally:
-            conn.close()
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT period FROM periods ORDER BY period")
+                periods = [row[0] for row in cursor.fetchall()]
+                return periods
+            except Exception as e:
+                print(f"Ошибка загрузки периодов: {e}")
+                return []
     
     def load_schedule(self, period):
         """Загрузка расписания с сервера или из локальной БД"""
@@ -393,66 +376,62 @@ class ScheduleManager:
     
     def _save_schedule_to_local(self, period, data):
         """Сохранение расписания в локальную БД"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Получаем или создаем период
-            cursor.execute("SELECT id FROM periods WHERE period = ?", (period,))
-            result = cursor.fetchone()
-            
-            if result:
-                period_id = result[0]
-            else:
-                cursor.execute("INSERT INTO periods (period) VALUES (?)", (period,))
-                period_id = cursor.lastrowid
-            
-            # Сохраняем расписание
-            for emp_name, schedule in data['schedule'].items():
-                for day_index, status in enumerate(schedule):
-                    notes_data = data['notes'].get(emp_name, {}).get(str(day_index), {})
-                    
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                # Получаем или создаем период
+                cursor.execute("SELECT id FROM periods WHERE period = ?", (period,))
+                result = cursor.fetchone()
+                
+                if result:
+                    period_id = result[0]
+                else:
+                    cursor.execute("INSERT INTO periods (period) VALUES (?)", (period,))
+                    period_id = cursor.lastrowid
+                
+                # Сохраняем расписание
+                for emp_name, schedule in data['schedule'].items():
+                    for day_index, status in enumerate(schedule):
+                        notes_data = data['notes'].get(emp_name, {}).get(str(day_index), {})
+                        
+                        cursor.execute('''
+                            INSERT OR REPLACE INTO schedules 
+                            (period_id, employee_name, day_index, status, end_time, worked_hours, note_type)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            period_id, emp_name, day_index, status,
+                            notes_data.get('end_time'), notes_data.get('worked_hours'),
+                            notes_data.get('note_type', '')
+                        ))
+                
+                # Сохраняем порядок сотрудников
+                for i, emp in enumerate(data.get('employees', [])):
                     cursor.execute('''
-                        INSERT OR REPLACE INTO schedules 
-                        (period_id, employee_name, day_index, status, end_time, worked_hours, note_type)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        period_id, emp_name, day_index, status,
-                        notes_data.get('end_time'), notes_data.get('worked_hours'),
-                        notes_data.get('note_type', '')
-                    ))
-            
-            # Сохраняем порядок сотрудников
-            for i, emp in enumerate(data.get('employees', [])):
-                cursor.execute('''
-                    INSERT OR REPLACE INTO employee_order (period, employee_name, sort_order)
-                    VALUES (?, ?, ?)
-                ''', (period, emp['name'], i))
-            
-            conn.commit()
-        except Exception as e:
-            print(f"Ошибка сохранения расписания: {e}")
-            conn.rollback()
-        finally:
-            conn.close()
+                        INSERT OR REPLACE INTO employee_order (period, employee_name, sort_order)
+                        VALUES (?, ?, ?)
+                    ''', (period, emp['name'], i))
+                
+                conn.commit()
+            except Exception as e:
+                print(f"Ошибка сохранения расписания: {e}")
+                conn.rollback()
     
     def _load_schedule_from_local(self, period):
         """Загрузка расписания из локальной БД"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Получаем ID периода
-            cursor.execute("SELECT id FROM periods WHERE period = ?", (period,))
-            result = cursor.fetchone()
-            
-            if not result:
-                return None
-            
-            period_id = result[0]
-            
-            # Получаем сотрудников периода с учетом порядка сортировки
-            cursor.execute('''
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                # Получаем ID периода
+                cursor.execute("SELECT id FROM periods WHERE period = ?", (period,))
+                result = cursor.fetchone()
+                
+                if not result:
+                    return None
+                
+                period_id = result[0]
+                
+                # Получаем сотрудников периода с учетом порядка сортировки
+                cursor.execute('''
                 SELECT eo.employee_name, eo.sort_order, 
                        COALESCE(e.position, '') as position,
                        COALESCE(e.is_deleted, 0) as is_deleted
@@ -460,83 +439,80 @@ class ScheduleManager:
                 LEFT JOIN employees e ON eo.employee_name = e.name
                 WHERE eo.period = ?
                 ORDER BY eo.sort_order
-            ''', (period,))
-            
-            order_result = cursor.fetchall()
-            
-            if order_result:
-                # Используем порядок из таблицы employee_order
-                employees = []
-                for row in order_result:
-                    emp_name, sort_order, position, is_deleted = row
-                    if is_deleted == 0:  # Показываем только активных сотрудников
-                        employees.append({'name': emp_name, 'position': position})
-            else:
-                # Если порядка нет, получаем сотрудников по умолчанию
-                cursor.execute("PRAGMA table_info(employees)")
-                columns = [col[1] for col in cursor.fetchall()]
+                ''', (period,))
                 
-                if 'is_deleted' in columns:
-                    cursor.execute('''
-                        SELECT DISTINCT s.employee_name, e.position
-                        FROM schedules s
-                        LEFT JOIN employees e ON s.employee_name = e.name
-                        WHERE s.period_id = ? AND (e.is_deleted = 0 OR e.is_deleted IS NULL)
-                        ORDER BY s.employee_name
-                    ''', (period_id,))
+                order_result = cursor.fetchall()
+                
+                if order_result:
+                    # Используем порядок из таблицы employee_order
+                    employees = []
+                    for row in order_result:
+                        emp_name, sort_order, position, is_deleted = row
+                        if is_deleted == 0:  # Показываем только активных сотрудников
+                            employees.append({'name': emp_name, 'position': position})
                 else:
-                    cursor.execute('''
-                        SELECT DISTINCT employee_name FROM schedules 
-                        WHERE period_id = ? ORDER BY employee_name
-                    ''', (period_id,))
+                    # Если порядка нет, получаем сотрудников по умолчанию
+                    cursor.execute("PRAGMA table_info(employees)")
+                    columns = [col[1] for col in cursor.fetchall()]
+                    
+                    if 'is_deleted' in columns:
+                        cursor.execute('''
+                            SELECT DISTINCT s.employee_name, e.position
+                            FROM schedules s
+                            LEFT JOIN employees e ON s.employee_name = e.name
+                            WHERE s.period_id = ? AND (e.is_deleted = 0 OR e.is_deleted IS NULL)
+                            ORDER BY s.employee_name
+                        ''', (period_id,))
+                    else:
+                        cursor.execute('''
+                            SELECT DISTINCT employee_name FROM schedules 
+                            WHERE period_id = ? ORDER BY employee_name
+                        ''', (period_id,))
+                    
+                    employees = [{'name': row[0], 'position': row[1] if len(row) > 1 else ''} for row in cursor.fetchall()]
                 
-                employees = [{'name': row[0], 'position': row[1] if len(row) > 1 else ''} for row in cursor.fetchall()]
-            
-            if not employees:
+                if not employees:
+                    return None
+                
+                # Получаем расписание
+                cursor.execute('''
+                    SELECT employee_name, day_index, status, end_time, worked_hours, note_type 
+                    FROM schedules WHERE period_id = ?
+                ''', (period_id,))
+                
+                schedule = {}
+                notes = {}
+                
+                for row in cursor.fetchall():
+                    emp_name, day_index, status, end_time, worked_hours, note_type = row
+                    
+                    if emp_name not in schedule:
+                        schedule[emp_name] = []
+                    
+                    # Заполняем массив до нужного размера
+                    while len(schedule[emp_name]) <= day_index:
+                        schedule[emp_name].append(4)  # Статус по умолчанию
+                    
+                    schedule[emp_name][day_index] = status
+                    
+                    # Обработка примечаний
+                    if end_time or worked_hours or note_type:
+                        if emp_name not in notes:
+                            notes[emp_name] = {}
+                        notes[emp_name][str(day_index)] = {
+                            'end_time': end_time,
+                            'worked_hours': worked_hours,
+                            'note_type': note_type
+                        }
+                
+                return {
+                    'employees': employees,
+                    'schedule': schedule,
+                    'notes': notes
+                }
+            except Exception as e:
+                print(f"Ошибка загрузки расписания: {e}")
                 return None
-            
-            # Получаем расписание
-            cursor.execute('''
-                SELECT employee_name, day_index, status, end_time, worked_hours, note_type 
-                FROM schedules WHERE period_id = ?
-            ''', (period_id,))
-            
-            schedule = {}
-            notes = {}
-            
-            for row in cursor.fetchall():
-                emp_name, day_index, status, end_time, worked_hours, note_type = row
-                
-                if emp_name not in schedule:
-                    schedule[emp_name] = []
-                
-                # Заполняем массив до нужного размера
-                while len(schedule[emp_name]) <= day_index:
-                    schedule[emp_name].append(4)  # Статус по умолчанию
-                
-                schedule[emp_name][day_index] = status
-                
-                # Обработка примечаний
-                if end_time or worked_hours or note_type:
-                    if emp_name not in notes:
-                        notes[emp_name] = {}
-                    notes[emp_name][str(day_index)] = {
-                        'end_time': end_time,
-                        'worked_hours': worked_hours,
-                        'note_type': note_type
-                    }
-            
-            return {
-                'employees': employees,
-                'schedule': schedule,
-                'notes': notes
-            }
-            
-        except Exception as e:
-            print(f"Ошибка загрузки расписания: {e}")
-            return None
-        finally:
-            conn.close()
     
     def save_schedule(self, period, data):
         """Сохранение расписания на сервер и в локальную БД"""
@@ -555,43 +531,40 @@ class ScheduleManager:
     
     def update_employee_order(self, period, employees):
         """Обновление порядка сотрудников для периода"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Удаляем старый порядок
-            cursor.execute("DELETE FROM employee_order WHERE period = ?", (period,))
-            
-            # Сохраняем новый порядок
-            for i, emp_name in enumerate(employees):
-                cursor.execute('''
-                    INSERT INTO employee_order (period, employee_name, sort_order)
-                    VALUES (?, ?, ?)
-                ''', (period, emp_name, i))
-            
-            conn.commit()
-            
-            # Обновляем кэш
-            if period in self._cache:
-                # Обновляем порядок сотрудников в кэше
-                current_data = self._cache[period]
-                # Создаем новый список сотрудников в правильном порядке
-                ordered_employees = []
-                for emp_name in employees:
-                    for emp in current_data['employees']:
-                        if emp['name'] == emp_name:
-                            ordered_employees.append(emp)
-                            break
-                current_data['employees'] = ordered_employees
-                self._cache[period] = current_data
-            
-            return True
-        except Exception as e:
-            conn.rollback()
-            print(f"Ошибка обновления порядка сотрудников: {e}")
-            return False
-        finally:
-            conn.close()
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                # Удаляем старый порядок
+                cursor.execute("DELETE FROM employee_order WHERE period = ?", (period,))
+                
+                # Сохраняем новый порядок
+                for i, emp_name in enumerate(employees):
+                    cursor.execute('''
+                        INSERT INTO employee_order (period, employee_name, sort_order)
+                        VALUES (?, ?, ?)
+                    ''', (period, emp_name, i))
+                
+                conn.commit()
+                
+                # Обновляем кэш
+                if period in self._cache:
+                    # Обновляем порядок сотрудников в кэше
+                    current_data = self._cache[period]
+                    # Создаем новый список сотрудников в правильном порядке
+                    ordered_employees = []
+                    for emp_name in employees:
+                        for emp in current_data['employees']:
+                            if emp['name'] == emp_name:
+                                ordered_employees.append(emp)
+                                break
+                    current_data['employees'] = ordered_employees
+                    self._cache[period] = current_data
+                
+                return True
+            except Exception as e:
+                conn.rollback()
+                print(f"Ошибка обновления порядка сотрудников: {e}")
+                return False
     
     def add_employee(self, name):
         """Добавление сотрудника"""
@@ -605,26 +578,23 @@ class ScheduleManager:
                 return False
         
         # Добавляем в локальную БД
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Проверяем наличие колонки is_deleted
-            cursor.execute("PRAGMA table_info(employees)")
-            columns = [col[1] for col in cursor.fetchall()]
-            
-            if 'is_deleted' in columns:
-                cursor.execute("INSERT INTO employees (name, is_deleted) VALUES (?, 0)", (name,))
-            else:
-                cursor.execute("INSERT INTO employees (name) VALUES (?)", (name,))
-            
-            conn.commit()
-            # Обновляем кэш
-            self._update_employee_caches()
-        except sqlite3.IntegrityError:
-            return False
-        finally:
-            conn.close()
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                # Проверяем наличие колонки is_deleted
+                cursor.execute("PRAGMA table_info(employees)")
+                columns = [col[1] for col in cursor.fetchall()]
+                
+                if 'is_deleted' in columns:
+                    cursor.execute("INSERT INTO employees (name, is_deleted) VALUES (?, 0)", (name,))
+                else:
+                    cursor.execute("INSERT INTO employees (name) VALUES (?)", (name,))
+                
+                conn.commit()
+                # Обновляем кэш
+                self._update_employee_caches()
+            except sqlite3.IntegrityError:
+                return False
         
         # Отправляем на сервер
         response = self.network_manager.send_request({
@@ -636,79 +606,70 @@ class ScheduleManager:
     
     def update_employee(self, old_name, new_name, new_position):
         """Обновление данных сотрудника"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Проверяем, существует ли сотрудник с новым именем
-            cursor.execute("SELECT id FROM employees WHERE name = ? AND name != ?", (new_name, old_name))
-            if cursor.fetchone():
-                return False, "Сотрудник с таким именем уже существует"
-            
-            # Обновляем данные
-            cursor.execute("UPDATE employees SET name = ?, position = ? WHERE name = ?", 
-                         (new_name, new_position, old_name))
-            
-            # Обновляем все расписания, где упоминается этот сотрудник
-            cursor.execute("UPDATE schedules SET employee_name = ? WHERE employee_name = ?", 
-                         (new_name, old_name))
-            
-            # Обновляем порядок сотрудников
-            cursor.execute("UPDATE employee_order SET employee_name = ? WHERE employee_name = ?", 
-                         (new_name, old_name))
-            
-            conn.commit()
-            
-            # Обновляем кэш
-            self._update_employee_caches()
-            
-            # Очищаем кэш расписаний, так как имена сотрудников изменились
-            self._cache = {}
-            
-            return True, "Данные сотрудника обновлены"
-        except Exception as e:
-            conn.rollback()
-            return False, f"Ошибка обновления: {str(e)}"
-        finally:
-            conn.close()
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                # Проверяем, существует ли сотрудник с новым именем
+                cursor.execute("SELECT id FROM employees WHERE name = ? AND name != ?", (new_name, old_name))
+                if cursor.fetchone():
+                    return False, "Сотрудник с таким именем уже существует"
+                
+                # Обновляем данные
+                cursor.execute("UPDATE employees SET name = ?, position = ? WHERE name = ?", 
+                             (new_name, new_position, old_name))
+                
+                # Обновляем все расписания, где упоминается этот сотрудник
+                cursor.execute("UPDATE schedules SET employee_name = ? WHERE employee_name = ?", 
+                             (new_name, old_name))
+                
+                # Обновляем порядок сотрудников
+                cursor.execute("UPDATE employee_order SET employee_name = ? WHERE employee_name = ?", 
+                             (new_name, old_name))
+                
+                conn.commit()
+                
+                # Обновляем кэш
+                self._update_employee_caches()
+                
+                # Очищаем кэш расписаний, так как имена сотрудников изменились
+                self._cache = {}
+                
+                return True, "Данные сотрудника обновлены"
+            except Exception as e:
+                conn.rollback()
+                return False, f"Ошибка обновления: {str(e)}"
     
     def delete_employee(self, name):
         """Помечаем сотрудника как удаленного (мягкое удаление)"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute("UPDATE employees SET is_deleted = 1 WHERE name = ?", (name,))
-            conn.commit()
-            
-            # Обновляем кэш
-            self._update_employee_caches()
-            
-            return True, "Сотрудник помечен как удаленный"
-        except Exception as e:
-            conn.rollback()
-            return False, f"Ошибка удаления: {str(e)}"
-        finally:
-            conn.close()
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("UPDATE employees SET is_deleted = 1 WHERE name = ?", (name,))
+                conn.commit()
+                
+                # Обновляем кэш
+                self._update_employee_caches()
+                
+                return True, "Сотрудник помечен как удаленный"
+            except Exception as e:
+                conn.rollback()
+                return False, f"Ошибка удаления: {str(e)}"
     
     def restore_employee(self, name):
         """Восстановление удаленного сотрудника"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute("UPDATE employees SET is_deleted = 0 WHERE name = ?", (name,))
-            conn.commit()
-            
-            # Обновляем кэш
-            self._update_employee_caches()
-            
-            return True, "Сотрудник восстановлен"
-        except Exception as e:
-            conn.rollback()
-            return False, f"Ошибка восстановления: {str(e)}"
-        finally:
-            conn.close()
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("UPDATE employees SET is_deleted = 0 WHERE name = ?", (name,))
+                conn.commit()
+                
+                # Обновляем кэш
+                self._update_employee_caches()
+                
+                return True, "Сотрудник восстановлен"
+            except Exception as e:
+                conn.rollback()
+                return False, f"Ошибка восстановления: {str(e)}"
     
     def create_period(self, period, employees, copy_from=None):
         """Создание периода"""
@@ -754,6 +715,48 @@ class ScheduleManager:
         })
         
         return response.get('status') == 'success' or response.get('status') == 'offline'
+    
+    def delete_period(self, period):
+        """Удаление периода из локальной БД и с сервера"""
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                # Получаем ID периода
+                cursor.execute("SELECT id FROM periods WHERE period = ?", (period,))
+                result = cursor.fetchone()
+                
+                if result:
+                    period_id = result[0]
+                    
+                    # Удаляем расписание
+                    cursor.execute("DELETE FROM schedules WHERE period_id = ?", (period_id,))
+                    
+                    # Удаляем порядок сотрудников
+                    cursor.execute("DELETE FROM employee_order WHERE period = ?", (period,))
+                    
+                    # Удаляем период
+                    cursor.execute("DELETE FROM periods WHERE id = ?", (period_id,))
+                    
+                    conn.commit()
+                    
+                    # Очищаем кэши
+                    if period in self._periods_cache:
+                        self._periods_cache.remove(period)
+                    if period in self._cache:
+                        del self._cache[period]
+                    
+                    # Отправляем на сервер
+                    response = self.network_manager.send_request({
+                        'action': 'delete_period',
+                        'period': period
+                    })
+                    
+                    return True
+                return False
+            except Exception as e:
+                print(f"Ошибка удаления периода: {e}")
+                conn.rollback()
+                return False
     
     def add_employees_to_period(self, period, employees):
         """Добавление сотрудников в период"""
@@ -813,36 +816,33 @@ class ScheduleManager:
     
     def _load_employees_from_local(self, include_deleted=False):
         """Загрузка сотрудников из локальной БД"""
-        conn = sqlite3.connect(self.local_db)
-        cursor = conn.cursor()
-        
-        try:
-            # Проверяем наличие колонки is_deleted
-            cursor.execute("PRAGMA table_info(employees)")
-            columns = [col[1] for col in cursor.fetchall()]
-            
-            if 'is_deleted' in columns:
-                if include_deleted:
-                    cursor.execute("SELECT name, position, is_deleted FROM employees")
+        with sqlite3.connect(self.local_db) as conn:
+            cursor = conn.cursor()
+            try:
+                # Проверяем наличие колонки is_deleted
+                cursor.execute("PRAGMA table_info(employees)")
+                columns = [col[1] for col in cursor.fetchall()]
+                
+                if 'is_deleted' in columns:
+                    if include_deleted:
+                        cursor.execute("SELECT name, position, is_deleted FROM employees")
+                    else:
+                        cursor.execute("SELECT name, position FROM employees WHERE is_deleted = 0")
                 else:
-                    cursor.execute("SELECT name, position FROM employees WHERE is_deleted = 0")
-            else:
-                # Если колонки нет, получаем всех сотрудников
-                cursor.execute("SELECT name, position FROM employees")
-            
-            employees = []
-            for row in cursor.fetchall():
-                if include_deleted and 'is_deleted' in columns:
-                    emp = {'name': row[0], 'position': row[1], 'is_deleted': row[2]}
-                else:
-                    emp = {'name': row[0], 'position': row[1]}
-                employees.append(emp)
-            return employees
-        except Exception as e:
-            print(f"Ошибка загрузки сотрудников: {e}")
-            return []
-        finally:
-            conn.close()
+                    # Если колонки нет, получаем всех сотрудников
+                    cursor.execute("SELECT name, position FROM employees")
+                
+                employees = []
+                for row in cursor.fetchall():
+                    if include_deleted and 'is_deleted' in columns:
+                        emp = {'name': row[0], 'position': row[1], 'is_deleted': row[2]}
+                    else:
+                        emp = {'name': row[0], 'position': row[1]}
+                    employees.append(emp)
+                return employees
+            except Exception as e:
+                print(f"Ошибка загрузки сотрудников: {e}")
+                return []
 
 
 class ConnectionDialog(QDialog):
@@ -1111,6 +1111,12 @@ class NoteTableWidget(QTableWidget):
         self.is_loading = False
         self.cut_data = None  # Для хранения вырезанных данных
         self.copied_data = None  # Для хранения скопированных данных
+        
+        # Debounce для update_counters
+        self._update_timer = QTimer()
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self._delayed_update_counters)
+        self._pending_updates = False
     
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -1123,10 +1129,17 @@ class NoteTableWidget(QTableWidget):
     def setItem(self, row, column, item):
         super().setItem(row, column, item)
         if not self.is_loading and column < self.columnCount() - 4:
-            self.parent_widget.update_counters()
+            self._pending_updates = True
+            self._update_timer.start(300)  # Debounce 300ms
             # Исправляем обращение к главному окну
             if hasattr(self.parent_widget, 'parent') and hasattr(self.parent_widget.parent, 'set_unsaved_changes'):
                 self.parent_widget.parent.set_unsaved_changes(True)
+    
+    def _delayed_update_counters(self):
+        """Отложенное обновление счетчиков"""
+        if self._pending_updates and not self.is_loading:
+            self.parent_widget.update_counters()
+            self._pending_updates = False
     
     def paste_selected(self):
         """Вставка данных из буфера обмена"""
@@ -1185,7 +1198,7 @@ class NoteTableWidget(QTableWidget):
                         else:
                             if end_time and end_time != '20:00':
                                 hour_part = end_time.split(':')[0] if ':' in end_time else end_time
-                                new_item.setText(f"{hour_part}.")
+                                new_item.setText(f"{hour_part}")
                             else:
                                 new_item.setText("")
                         
@@ -1634,6 +1647,38 @@ class MonthWidget(QWidget):
         self.copied_data = None  # Для хранения скопированных данных
         self.initUI()
     
+    @staticmethod
+    def create_trash_icon():
+        """Создает контурную минималистичную иконку корзины"""
+        pixmap = QPixmap(18, 18)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Контурная кисть и перо (белый цвет для контраста на красном фоне)
+        pen = QPen(QColor(255, 255, 255), 1.8)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        
+        # Минималистичная контурная корзина
+        # Ручка (верхняя часть) - простая горизонтальная линия с вертикальными опорами
+        painter.drawLine(5, 4, 5, 6)  # Левая опора
+        painter.drawLine(13, 4, 13, 6)  # Правая опора
+        painter.drawLine(5, 4, 13, 4)  # Верхняя перекладина
+        
+        # Корпус корзины - простой контур
+        painter.drawLine(4, 6, 4, 13)  # Левая сторона
+        painter.drawLine(14, 6, 14, 13)  # Правая сторона
+        painter.drawLine(4, 6, 14, 6)  # Верх
+        
+        # Низ корзины - простая линия
+        painter.drawLine(4, 13, 14, 13)
+        
+        painter.end()
+        return QIcon(pixmap)
+    
     def initUI(self):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1694,11 +1739,55 @@ class MonthWidget(QWidget):
                 background-color: #696969;
             }
             QPushButton:pressed {
-                transperent: 50%;
             }
         """)
         self.order_btn.clicked.connect(self.change_employee_order)
         top_layout.addWidget(self.order_btn)
+        
+        # Кнопка экспорта этого месяца в Excel
+        self.export_month_btn = QPushButton("Экспорт")
+        self.export_month_btn.setFixedHeight(24)
+        self.export_month_btn.setFixedWidth(70)
+        self.export_month_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #808080;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #696969;
+            }
+            QPushButton:pressed {
+                background-color: #505050;
+            }
+        """)
+        self.export_month_btn.clicked.connect(self._export_this_month)
+        top_layout.addWidget(self.export_month_btn)
+        
+        # Кнопка удаления этого месяца
+        self.delete_month_btn = QPushButton()
+        self.delete_month_btn.setIcon(self.create_trash_icon())
+        self.delete_month_btn.setFixedHeight(24)
+        self.delete_month_btn.setFixedWidth(30)
+        self.delete_month_btn.setToolTip("Удалить месяц")
+        self.delete_month_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #dc3545;
+                color: white;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #c82333;
+            }
+            QPushButton:pressed {
+                background-color: #bd2130;
+            }
+        """)
+        self.delete_month_btn.clicked.connect(self._delete_this_month)
+        top_layout.addWidget(self.delete_month_btn)
         
         top_layout.addStretch()
         
@@ -1731,6 +1820,19 @@ class MonthWidget(QWidget):
         font.setBold(True)
         font.setPointSize(10)
         table.verticalHeader().setFont(font)
+    
+    def _export_this_month(self):
+        """Экспорт таблицы этого месяца в Excel (вызов главного окна)."""
+        if self.parent_app and hasattr(self.parent_app, 'export_month_to_excel'):
+            self.parent_app.export_month_to_excel(self)
+    
+    def _delete_this_month(self):
+        """Удаление этого месяца с подтверждением."""
+        if not self.current_period:
+            return
+        
+        if self.parent_app and hasattr(self.parent_app, 'delete_period'):
+            self.parent_app.delete_period(self.current_period, self)
     
     def change_employee_order(self):
         """Изменение порядка сотрудников в таблице"""
@@ -1896,150 +1998,145 @@ class MonthWidget(QWidget):
             
         self.table.is_loading = True
         
-        self.table.clear()
-        self.current_period = period
-            
-        schedule_data = self.db.load_schedule(period)
+        # Отключаем обновления UI для массовых операций
+        self.table.setUpdatesEnabled(False)
         
-        if not schedule_data:
-            self.table.setRowCount(0)
-            self.table.setColumnCount(0)
-            self.table.is_loading = False
-            return
-        
-        employees_in_period = schedule_data.get("employees", [])
-        if not employees_in_period:
-            self.table.setRowCount(0)
-            self.table.setColumnCount(0)
-            self.table.is_loading = False
-            return
-        
-        # Извлекаем базовую дату из названия периода
         try:
-            base_name = period
-            if ' (' in period:
-                base_name = period.split(' (')[0]
-            
-            month_name, year = base_name.rsplit(' ', 1)
-            year = int(year)
-            
-            # Получаем номер месяца
-            month_num = 1
-            for num, name in self.parent_app.month_names.items():
-                if name == month_name:
-                    month_num = num
-                    break
-            
-            days_in_month = monthrange(year, month_num)[1]
-            day_mapping = []  # Массив для хранения всех дней
-            is_sunday_mapping = []  # Массив для хранения информации о воскресеньях
-            
-            for day in range(1, days_in_month + 1):
-                day_mapping.append(day)
-                # Определяем, является ли день воскресеньем
-                is_sunday = datetime(year, month_num, day).weekday() == 6
-                is_sunday_mapping.append(is_sunday)
+            self.table.clear()
+            self.current_period = period
                 
-        except:
-            days_in_month = 31
-            day_mapping = list(range(1, days_in_month + 1))
-            is_sunday_mapping = [False] * days_in_month
-        
-        self.table.setRowCount(len(employees_in_period))
-        self.table.setColumnCount(days_in_month + 4)  # +4 для итоговых столбцов
-        
-        # Сохраняем информацию о воскресеньях
-        self.sunday_columns = []
-        for col, actual_day in enumerate(day_mapping):
+            schedule_data = self.db.load_schedule(period)
+            
+            if not schedule_data:
+                self.table.setRowCount(0)
+                self.table.setColumnCount(0)
+                return
+            
+            employees_in_period = schedule_data.get("employees", [])
+            if not employees_in_period:
+                self.table.setRowCount(0)
+                self.table.setColumnCount(0)
+                self.table.is_loading = False
+                return
+            
+            # Извлекаем базовую дату из названия периода
             try:
-                day_of_week = datetime(year, month_num, actual_day).weekday()
-                if day_of_week == 6:  # Воскресенье
-                    self.sunday_columns.append(col)
+                base_name = period.split(' (')[0] if ' (' in period else period
+                month_name, year = base_name.rsplit(' ', 1)
+                year = int(year)
+                
+                # Используем обратный словарь для быстрого поиска
+                month_num = self.parent_app.month_names_reverse.get(month_name, 1)
+                
+                days_in_month = monthrange(year, month_num)[1]
+                day_mapping = list(range(1, days_in_month + 1))
+                
+                # Вычисляем воскресенья один раз
+                is_sunday_mapping = []
+                self.sunday_columns = []
+                for day in range(1, days_in_month + 1):
+                    day_of_week = datetime(year, month_num, day).weekday()
+                    is_sunday = (day_of_week == 6)
+                    is_sunday_mapping.append(is_sunday)
+                    if is_sunday:
+                        self.sunday_columns.append(day - 1)
+                    
             except:
-                pass
-        
-        # Устанавливаем заголовки строк (сотрудники)
-        for row, emp in enumerate(employees_in_period):
-            self.table.setVerticalHeaderItem(row, QTableWidgetItem(emp["name"]))
-        
-        notes_data = schedule_data.get('notes', {})
-        
-        for row, emp in enumerate(employees_in_period):
-            emp_name = emp["name"]
-            emp_schedule = schedule_data['schedule'].get(emp_name, [4]*days_in_month)  
-            emp_notes = notes_data.get(emp_name, {})
+                days_in_month = 31
+                day_mapping = list(range(1, days_in_month + 1))
+                is_sunday_mapping = [False] * days_in_month
+                self.sunday_columns = []
             
-            for col, actual_day in enumerate(day_mapping):
-                day_index = actual_day - 1
-                is_sunday = is_sunday_mapping[day_index]
+            self.table.setRowCount(len(employees_in_period))
+            self.table.setColumnCount(days_in_month + 4)  # +4 для итоговых столбцов
+            
+            # Устанавливаем заголовки строк (сотрудники)
+            for row, emp in enumerate(employees_in_period):
+                self.table.setVerticalHeaderItem(row, QTableWidgetItem(emp["name"]))
+            
+            notes_data = schedule_data.get('notes', {})
+            
+            for row, emp in enumerate(employees_in_period):
+                emp_name = emp["name"]
+                emp_schedule = schedule_data['schedule'].get(emp_name, [4]*days_in_month)  
+                emp_notes = notes_data.get(emp_name, {})
                 
-                # Для воскресенья всегда используем статус "Не работает"
-                if is_sunday:
-                    day_status = 2  # Статус "Не работает"
-                else:
-                    day_status = emp_schedule[day_index]
+                for col, actual_day in enumerate(day_mapping):
+                    day_index = actual_day - 1
+                    is_sunday = is_sunday_mapping[day_index]
                     
-                icon, _, bg_color, _ = self.parent_app.status_mapping.get(day_status, ("", "Пусто", QColor(Qt.white), 0))
-                
-                note_key = str(day_index)
-                has_note = note_key in emp_notes
-                note_data = emp_notes.get(note_key, {})
-                
-                item = NoteItem("", has_note, note_data)
-                item.setTextAlignment(Qt.AlignCenter)
-                item.setBackground(bg_color)
-                item.setForeground(Qt.black)
-                
-                if has_note and not is_sunday:  # Примечания не показываем для воскресений
-                    end_time = note_data.get('end_time', '20:00')
-                    note_type = note_data.get('note_type', '')
-                    
-                    # Форматируем текст в зависимости от типа примечания
-                    if note_type:
-                        if end_time and end_time != '20:00':
-                            # Извлекаем час из времени
-                            hour_part = end_time.split(':')[0] if ':' in end_time else end_time
-                            item.setText(f"{hour_part}-{note_type}")
-                        else:
-                            item.setText(note_type)
+                    # Для воскресенья всегда используем статус "Не работает"
+                    if is_sunday:
+                        day_status = 2  # Статус "Не работает"
                     else:
-                        if end_time and end_time != '20:00':
-                            # Извлекаем час из времени
-                            hour_part = end_time.split(':')[0] if ':' in end_time else end_time
-                            item.setText(f"{hour_part}.")
+                        day_status = emp_schedule[day_index]
+                        
+                    icon, _, bg_color, _ = self.parent_app.status_mapping.get(day_status, ("", "Пусто", QColor(Qt.white), 0))
+                    
+                    note_key = str(day_index)
+                    has_note = note_key in emp_notes
+                    note_data = emp_notes.get(note_key, {})
+                    
+                    item = NoteItem("", has_note, note_data)
+                    item.setTextAlignment(Qt.AlignCenter)
+                    item.setBackground(bg_color)
+                    item.setForeground(Qt.black)
+                    
+                    if has_note and not is_sunday:  # Примечания не показываем для воскресений
+                        end_time = note_data.get('end_time', '20:00')
+                        note_type = note_data.get('note_type', '')
+                        
+                        # Форматируем текст в зависимости от типа примечания
+                        if note_type:
+                            if end_time and end_time != '20:00':
+                                # Извлекаем час из времени
+                                hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                                item.setText(f"{hour_part}-{note_type}")
+                            else:
+                                item.setText(note_type)
                         else:
-                            item.setText("")
+                            if end_time and end_time != '20:00':
+                                # Извлекаем час из времени
+                                hour_part = end_time.split(':')[0] if ':' in end_time else end_time
+                                item.setText(f"{hour_part}")
+                            else:
+                                item.setText("")
+                        
+                        item.setData(Qt.UserRole, True)
+                        
+                        # Создаем всплывающую подсказку
+                        tooltip_parts = []
+                        if note_data.get('worked_hours'):
+                            tooltip_parts.append(f"Отработано: {note_data.get('worked_hours', 12)} часов")
+                        if note_type == 'о':
+                            tooltip_parts.append("Ответственный")
+                        elif note_type == 'д':
+                            tooltip_parts.append("ДМС")
+                        elif note_type == '*':
+                            tooltip_parts.append("Нежелание работать")
+                        
+                        if tooltip_parts:
+                            item.setToolTip("\n".join(tooltip_parts))
+                    else:
+                        item.setText("")
                     
-                    item.setData(Qt.UserRole, True)
-                    
-                    # Создаем всплывающую подсказку
-                    tooltip_parts = []
-                    if note_data.get('worked_hours'):
-                        tooltip_parts.append(f"Отработано: {note_data.get('worked_hours', 12)} часов")
-                    if note_type == 'о':
-                        tooltip_parts.append("Ответственный")
-                    elif note_type == 'д':
-                        tooltip_parts.append("ДМС")
-                    elif note_type == '*':
-                        tooltip_parts.append("Нежелание работать")
-                    
-                    if tooltip_parts:
-                        item.setToolTip("\n".join(tooltip_parts))
-                else:
-                    item.setText("")
-                
-                self.table.setItem(row, col, item)
-        
-        self.table.is_loading = False
-        self.update_counters()
-        
-        # Применяем текущий масштаб после загрузки данных
-        self.apply_scale(self.parent_app.current_scale)
-        
-        # Обновляем стиль заголовков
-        self.update_header_style()
-        
-        self.table.viewport().update()
+                    self.table.setItem(row, col, item)
+            
+            self.table.is_loading = False
+            self.update_counters()
+            
+            # Применяем текущий масштаб после загрузки данных
+            self.apply_scale(self.parent_app.current_scale)
+            
+            # Обновляем стиль заголовков
+            self.update_header_style()
+        except Exception as e:
+            print(f"Ошибка загрузки данных: {e}")
+            self.table.is_loading = False
+        finally:
+            # Включаем обновления UI обратно
+            self.table.setUpdatesEnabled(True)
+            self.table.viewport().update()
     
     def update_header_style(self):
         """Обновляет стиль заголовков таблицы"""
@@ -2157,8 +2254,6 @@ class MonthWidget(QWidget):
                         if worked_hours > 0:
                             total_hours += worked_hours
             
-            hours, minutes = self.hours_to_hours_minutes(total_hours)
-            
             # Заполняем итоговые столбцы
             if days_in_month < self.table.columnCount():
                 total_shifts_item = self.table.item(row, days_in_month)
@@ -2199,8 +2294,7 @@ class MonthWidget(QWidget):
                     hours_item.setFont(QFont("Arial", 8, QFont.Bold))
                     self.table.setItem(row, days_in_month + 3, hours_item)
                 
-                hours_text = f"{hours}ч {minutes}м"
-                hours_item.setText(hours_text)
+                hours_item.setText(f"{total_hours:.1f}".replace(".", ","))
         
         # Обновляем заголовки столбцов
         day_headers = []
@@ -2376,7 +2470,7 @@ class MonthWidget(QWidget):
                     if end_time and end_time != '20:00':
                         # Извлекаем час из времени
                         hour_part = end_time.split(':')[0] if ':' in end_time else end_time
-                        item.setText(f"{hour_part}.")
+                        item.setText(f"{hour_part}")
                     else:
                         item.setText("")
                 
@@ -2539,7 +2633,7 @@ class MonthWidget(QWidget):
                         else:
                             if end_time and end_time != '20:00':
                                 hour_part = end_time.split(':')[0] if ':' in end_time else end_time
-                                new_item.setText(f"{hour_part}.")
+                                new_item.setText(f"{hour_part}")
                             else:
                                 new_item.setText("")
                         
@@ -2631,7 +2725,7 @@ class MonthWidget(QWidget):
                         if end_time and end_time != '20:00':
                             # Извлекаем час из времени
                             hour_part = end_time.split(':')[0] if ':' in end_time else end_time
-                            new_item.setText(f"{hour_part}.")
+                            new_item.setText(f"{hour_part}")
                         else:
                             new_item.setText("")
                     
@@ -2829,6 +2923,68 @@ class AddEmployeeToPeriodDialog(QDialog):
         return [name for name, cb in self.checkboxes if cb.isChecked()]
 
 
+class ExportSettingsDialog(QDialog):
+    """Окно экспорта: папка для всего расписания и папка для активного месяца."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Экспорт")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+        
+        # 1. Папка для сохранения всего расписания
+        layout.addWidget(QLabel("Папка для сохранения всего расписания:"))
+        row1 = QHBoxLayout()
+        self.path_all_edit = QLineEdit()
+        self.path_all_edit.setReadOnly(True)
+        self.path_all_edit.setPlaceholderText("Не выбрана")
+        row1.addWidget(self.path_all_edit)
+        self.btn_change_all = QPushButton("Изменить")
+        self.btn_change_all.clicked.connect(self._on_change_folder_all)
+        row1.addWidget(self.btn_change_all)
+        layout.addLayout(row1)
+        
+        layout.addSpacing(15)
+        
+        # 2. Папка для сохранения активного месяца
+        layout.addWidget(QLabel("Папка для сохранения активного месяца:"))
+        row2 = QHBoxLayout()
+        self.path_month_edit = QLineEdit()
+        self.path_month_edit.setReadOnly(True)
+        self.path_month_edit.setPlaceholderText("Не выбрана")
+        row2.addWidget(self.path_month_edit)
+        self.btn_change_month = QPushButton("Изменить")
+        self.btn_change_month.clicked.connect(self._on_change_folder_month)
+        row2.addWidget(self.btn_change_month)
+        layout.addLayout(row2)
+        
+        layout.addStretch()
+        button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        button_box.rejected.connect(self.accept)
+        layout.addWidget(button_box)
+    
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_paths()
+    
+    def _refresh_paths(self):
+        if self.parent():
+            self.path_all_edit.setText(self.parent().export_folder or "")
+            self.path_month_edit.setText(self.parent().export_folder_single or "")
+    
+    def _on_change_folder_all(self):
+        if self.parent():
+            self.parent().select_export_folder()
+            self._refresh_paths()
+    
+    def _on_change_folder_month(self):
+        if self.parent():
+            self.parent().select_export_folder_single()
+            self._refresh_paths()
+
+
 class ScheduleApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2848,6 +3004,7 @@ class ScheduleApp(QMainWindow):
         self.last_opened_periods = self.settings.value("last_opened_periods", [], type=list)
         
         self.export_folder = self.settings.value("export_folder", "")
+        self.export_folder_single = self.settings.value("export_folder_single", "")
         
         # Настройки подключения
         self.server_host = self.settings.value("server_host", "localhost")
@@ -2863,7 +3020,7 @@ class ScheduleApp(QMainWindow):
         self.unsaved_changes = False
         
         self.status_mapping = {
-            0: ("", "Колл-центр", QColor("#77FF77"), 12),
+            0: ("", "Колл-центр", QColor("#30D5C8"), 12),
             1: ("", "Регистратура", QColor("#7777FF"), 12),
             2: ("", "Не работает", QColor("#FF7777"), 0),
             3: ("", "Отпуск", QColor("#FFFF77"), 0),
@@ -2875,6 +3032,8 @@ class ScheduleApp(QMainWindow):
             5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
             9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
         }
+        # Обратный словарь для быстрого поиска месяца по имени
+        self.month_names_reverse = {name: num for num, name in self.month_names.items()}
         
         self.day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -2906,11 +3065,14 @@ class ScheduleApp(QMainWindow):
         # Создаем меню
         menubar = self.menuBar()
         
-        # Меню "Подключение"
-        connection_menu = menubar.addMenu('Подключение')
+        # Меню "Настройки"
+        settings_menu = menubar.addMenu('Настройки')
         connection_action = QAction('Настройки подключения', self)
         connection_action.triggered.connect(self.show_connection_dialog)
-        connection_menu.addAction(connection_action)
+        settings_menu.addAction(connection_action)
+        export_action = QAction('Экспорт', self)
+        export_action.triggered.connect(self.show_export_settings_dialog)
+        settings_menu.addAction(export_action)
         
         # Меню "Сотрудники"
         employees_menu = menubar.addMenu('Сотрудники')
@@ -3058,29 +3220,6 @@ class ScheduleApp(QMainWindow):
             }
         """)
         right_buttons_layout.addWidget(self.open_doc_btn)
-        
-        # Кнопка Выбрать папку
-        self.select_folder_btn = QPushButton("Выбрать папку")
-        self.select_folder_btn.clicked.connect(self.select_export_folder)
-        self.select_folder_btn.setFixedHeight(30)
-        self.select_folder_btn.setFixedWidth(120)
-        self.select_folder_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #808080;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-size: 14px;
-                font-weight: 400;
-            }
-            QPushButton:hover {
-                background-color: #696969;
-            }
-            QPushButton:pressed {
-                background-color: #505050;
-            }
-        """)
-        right_buttons_layout.addWidget(self.select_folder_btn)
         
         # Кнопка Сохранить
         self.save_btn = QPushButton("СОХРАНИТЬ")
@@ -3498,6 +3637,54 @@ class ScheduleApp(QMainWindow):
         finally:
             conn.close()
     
+    def delete_period(self, period, widget=None):
+        """Удаление периода с подтверждением"""
+        if not period:
+            return
+        
+        # Подтверждение удаления
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Вы уверены, что хотите удалить период '{period}'?\n\nЭто действие нельзя отменить.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Удаляем период из БД
+            if self.db.delete_period(period):
+                # Сохраняем текущие периоды виджетов перед обновлением
+                current_period1 = self.month_widget1.current_period
+                current_period2 = self.month_widget2.current_period
+                
+                # Обновляем списки периодов в обоих виджетах
+                self.month_widget1.load_periods()
+                self.month_widget2.load_periods()
+                
+                # Если удаленный период был активен, очищаем виджет
+                if current_period1 == period:
+                    self.month_widget1.current_period = None
+                    self.month_widget1.table.clear()
+                    self.month_widget1.table.setRowCount(0)
+                    self.month_widget1.table.setColumnCount(0)
+                    # Выбираем первый доступный период, если есть
+                    if self.month_widget1.period_combo.count() > 0:
+                        self.month_widget1.period_combo.setCurrentIndex(0)
+                
+                if current_period2 == period:
+                    self.month_widget2.current_period = None
+                    self.month_widget2.table.clear()
+                    self.month_widget2.table.setRowCount(0)
+                    self.month_widget2.table.setColumnCount(0)
+                    # Выбираем первый доступный период, если есть
+                    if self.month_widget2.period_combo.count() > 0:
+                        self.month_widget2.period_combo.setCurrentIndex(0)
+                
+                self.statusBar().showMessage(f"Период '{period}' удален", 3000)
+            else:
+                self.statusBar().showMessage(f"Ошибка удаления периода '{period}'", 5000)
+    
     def add_employees_to_period(self):
         """Добавляет сотрудников в уже созданный месяц"""
         current_widget = self.get_active_month_widget()
@@ -3787,12 +3974,252 @@ class ScheduleApp(QMainWindow):
         except Exception as e:
             self.statusBar().showMessage(f"Не удалось открыть файл: {str(e)}", 3000)
         
+    def show_export_settings_dialog(self):
+        """Показать окно настроек экспорта."""
+        dialog = ExportSettingsDialog(self)
+        dialog.exec_()
+    
     def select_export_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения")
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения всего расписания")
         if folder:
             self.export_folder = folder
             self.settings.setValue("export_folder", folder)
-            self.statusBar().showMessage(f"Папка для экспорта установлена: {folder}", 3000)
+            self.statusBar().showMessage(f"Папка для всего расписания: {folder}", 3000)
+    
+    def select_export_folder_single(self):
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения активного месяца")
+        if folder:
+            self.export_folder_single = folder
+            self.settings.setValue("export_folder_single", folder)
+            self.statusBar().showMessage(f"Папка для активного месяца: {folder}", 3000)
+    
+    def _period_to_filename(self, period):
+        """Формирует безопасное имя файла из названия периода."""
+        name = period.replace(" (", "_").replace(")", "").replace(" ", "_")
+        while "__" in name:
+            name = name.replace("__", "_")
+        name = name.strip("_")
+        return f"Расписание_{name}.xlsx"
+    
+    def export_month_to_excel(self, widget):
+        """Экспорт таблицы указанного виджета месяца в отдельный файл (перезапись при повторном экспорте)."""
+        if not widget or not widget.current_period:
+            self.statusBar().showMessage("Нет месяца для экспорта", 3000)
+            return
+        self._do_export_month_to_excel(widget.current_period)
+    
+    def export_active_month_to_excel(self):
+        """Экспорт активного месяца (по фокусу) в Excel."""
+        active_widget = self.get_active_month_widget()
+        self.export_month_to_excel(active_widget)
+    
+    def _do_export_month_to_excel(self, period):
+        """Общая логика экспорта одного периода в Excel."""
+        try:
+            folder = self.export_folder_single or self.export_folder
+            if not folder:
+                self.select_export_folder_single()
+                folder = self.export_folder_single or self.export_folder
+                if not folder:
+                    self.statusBar().showMessage("Экспорт отменён — не выбрана папка", 3000)
+                    return
+            
+            schedule_data = self.db.load_schedule(period)
+            if not schedule_data or not schedule_data.get('schedule'):
+                self.statusBar().showMessage("Нет данных по выбранному месяцу для экспорта", 3000)
+                return
+            
+            file_name = self._period_to_filename(period)
+            file_path = os.path.join(folder, file_name)
+            os.makedirs(folder, exist_ok=True)
+            
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Расписание"
+            
+            header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+            sunday_header_fill = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
+            center_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            bold_font = Font(bold=True)
+            thin_border = Border(left=Side(style='thin'), right=Side(style='thin'),
+                                top=Side(style='thin'), bottom=Side(style='thin'))
+            
+            status_styles = {
+                0: PatternFill(start_color="30D5C8", end_color="30D5C8", fill_type="solid"),
+                1: PatternFill(start_color="8080FF", end_color="8080FF", fill_type="solid"),
+                2: PatternFill(start_color="FF7777", end_color="FF7777", fill_type="solid"),
+                3: PatternFill(start_color="FFFF77", end_color="FFFF77", fill_type="solid"),
+                4: PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+            }
+            total_shifts_fill = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
+            registry_fill = PatternFill(start_color="8080FF", end_color="8080FF", fill_type="solid")
+            call_center_fill = PatternFill(start_color="30D5C8", end_color="30D5C8", fill_type="solid")
+            hours_fill = PatternFill(start_color="FFD700", end_color="FFD700", fill_type="solid")
+            
+            employees = schedule_data.get('employees', [])
+            notes_data = schedule_data.get('notes', {})
+            
+            try:
+                base_name = period
+                if ' (' in period:
+                    base_name = period.split(' (')[0]
+                month_name, year = base_name.rsplit(' ', 1)
+                year = int(year)
+                month_num = 1
+                for num, name in self.month_names.items():
+                    if name == month_name:
+                        month_num = num
+                        break
+                days_in_month = monthrange(year, month_num)[1]
+                day_mapping = list(range(1, days_in_month + 1))
+            except Exception:
+                days_in_month = len(next(iter(schedule_data['schedule'].values())))
+                day_mapping = list(range(1, days_in_month + 1))
+                year = datetime.now().year
+                month_num = datetime.now().month
+            
+            working_counts = [0] * days_in_month
+            for emp in employees:
+                emp_schedule = schedule_data['schedule'].get(emp["name"], [2] * days_in_month)
+                for col, actual_day in enumerate(day_mapping):
+                    day_index = actual_day - 1
+                    if emp_schedule[day_index] in [0, 1]:
+                        working_counts[col] += 1
+            
+            RESULT_COLUMNS_START = max_working_days = days_in_month + 2
+            RESULT_COLUMNS = {
+                "Смены": RESULT_COLUMNS_START,
+                "Рег": RESULT_COLUMNS_START + 1,
+                "КЦ": RESULT_COLUMNS_START + 2,
+                "Часы": RESULT_COLUMNS_START + 3
+            }
+            total_columns = days_in_month + 5
+            start_row = 1
+            
+            ws.cell(row=start_row, column=1, value=period).font = Font(bold=True, size=16)
+            ws.cell(row=start_row, column=1, value=period).fill = PatternFill(start_color="808080", end_color="808080", fill_type="solid")
+            ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=total_columns)
+            start_row += 1
+            
+            ws.cell(row=start_row, column=1, value="Сотрудник").fill = header_fill
+            ws.cell(row=start_row, column=1).alignment = center_alignment
+            ws.cell(row=start_row, column=1).font = bold_font
+            ws.cell(row=start_row, column=1).border = thin_border
+            
+            for col, actual_day in enumerate(day_mapping):
+                try:
+                    day_of_week = datetime(year, month_num, actual_day).weekday()
+                    day_name = self.day_names[day_of_week]
+                    is_sunday = day_of_week == 6
+                    if is_sunday:
+                        header_fill_type = sunday_header_fill
+                        header_text = f"{actual_day}\n{day_name}\n(0)"
+                    else:
+                        count = working_counts[col]
+                        header_fill_type = header_fill
+                        header_text = f"{actual_day}\n{day_name}\n({count})"
+                except Exception:
+                    header_text = str(actual_day)
+                    header_fill_type = header_fill
+                cell = ws.cell(row=start_row, column=col + 2, value=header_text)
+                cell.fill = header_fill_type
+                cell.alignment = center_alignment
+                cell.font = bold_font
+                cell.border = thin_border
+            
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"], value="Смены").fill = total_shifts_fill
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).alignment = center_alignment
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).font = bold_font
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).border = thin_border
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"], value="Рег").fill = registry_fill
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).alignment = center_alignment
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).font = bold_font
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).border = thin_border
+            ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"], value="КЦ").fill = call_center_fill
+            ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).alignment = center_alignment
+            ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).font = bold_font
+            ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).border = thin_border
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"], value="Часы").fill = hours_fill
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).alignment = center_alignment
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).font = bold_font
+            ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).border = thin_border
+            start_row += 1
+            
+            ws.column_dimensions['A'].width = 35
+            for col in range(2, days_in_month + 2):
+                ws.column_dimensions[get_column_letter(col)].width = 6
+            ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Смены"])].width = 8
+            ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Рег"])].width = 8
+            ws.column_dimensions[get_column_letter(RESULT_COLUMNS["КЦ"])].width = 8
+            ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Часы"])].width = 8
+            
+            for emp in employees:
+                emp_name = emp["name"]
+                ws.cell(row=start_row, column=1, value=emp_name).font = bold_font
+                schedule = schedule_data['schedule'].get(emp["name"], [2] * days_in_month)
+                emp_notes = notes_data.get(emp["name"], {})
+                total_shifts = 0
+                total_hours = 0.0
+                call_center_days = 0
+                registry_days = 0
+                
+                for col, actual_day in enumerate(day_mapping):
+                    day_index = actual_day - 1
+                    status = schedule[day_index]
+                    if status == 0:
+                        call_center_days += 1
+                        total_shifts += 1
+                        total_hours += emp_notes.get(str(day_index), {}).get('worked_hours', self.status_mapping[0][3])
+                    elif status == 1:
+                        registry_days += 1
+                        total_shifts += 1
+                        total_hours += emp_notes.get(str(day_index), {}).get('worked_hours', self.status_mapping[1][3])
+                    
+                    cell = ws.cell(row=start_row, column=col + 2)
+                    try:
+                        is_sunday = datetime(year, month_num, actual_day).weekday() == 6
+                    except Exception:
+                        is_sunday = False
+                    if not is_sunday and str(day_index) in emp_notes:
+                        note_data = emp_notes[str(day_index)]
+                        end_time = note_data.get('end_time', '')
+                        note_type = note_data.get('note_type', '')
+                        if note_type:
+                            cell.value = f"{end_time.split(':')[0]}-{note_type}" if (end_time and end_time != '20:00') else note_type
+                        else:
+                            cell.value = end_time.split(':')[0] if (end_time and end_time != '20:00') else ""
+                    else:
+                        cell.value = ""
+                    cell.alignment = center_alignment
+                    cell.border = thin_border
+                    if status in status_styles:
+                        cell.fill = status_styles[status]
+                
+                hours_value = round(total_hours, 1)
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"], value=total_shifts).fill = total_shifts_fill
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).alignment = center_alignment
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).font = bold_font
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"]).border = thin_border
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"], value=registry_days).fill = registry_fill
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).alignment = center_alignment
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).font = bold_font
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Рег"]).border = thin_border
+                ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"], value=call_center_days).fill = call_center_fill
+                ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).alignment = center_alignment
+                ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).font = bold_font
+                ws.cell(row=start_row, column=RESULT_COLUMNS["КЦ"]).border = thin_border
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"], value=hours_value).fill = hours_fill
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).alignment = center_alignment
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).font = bold_font
+                ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"]).border = thin_border
+                start_row += 1
+            
+            wb.save(file_path)
+            self.statusBar().showMessage(f"Месяц экспортирован: {file_path}", 5000)
+        except PermissionError:
+            self.statusBar().showMessage(f"Ошибка: нет прав для записи в папку", 5000)
+        except Exception as e:
+            self.statusBar().showMessage(f"Ошибка экспорта месяца: {str(e)}", 5000)
     
     def export_to_excel(self):
         """Экспорт всех данных в Excel"""
@@ -3821,7 +4248,7 @@ class ScheduleApp(QMainWindow):
                             top=Side(style='thin'), bottom=Side(style='thin'))
             
             status_styles = {
-                0: PatternFill(start_color="7FFF7F", end_color="7FFF7F", fill_type="solid"),
+                0: PatternFill(start_color="30D5C8", end_color="30D5C8", fill_type="solid"),
                 1: PatternFill(start_color="8080FF", end_color="8080FF", fill_type="solid"),
                 2: PatternFill(start_color="FF7777", end_color="FF7777", fill_type="solid"),
                 3: PatternFill(start_color="FFFF77", end_color="FFFF77", fill_type="solid"),
@@ -3830,7 +4257,7 @@ class ScheduleApp(QMainWindow):
 
             total_shifts_fill = PatternFill(start_color="FFA500", end_color="FFA500", fill_type="solid")
             registry_fill = PatternFill(start_color="8080FF", end_color="8080FF", fill_type="solid")
-            call_center_fill = PatternFill(start_color="7FFF7F", end_color="7FFF7F", fill_type="solid")
+            call_center_fill = PatternFill(start_color="30D5C8", end_color="30D5C8", fill_type="solid")
             hours_fill = PatternFill(start_color="FFD700", end_color="FFD700", fill_type="solid")
 
             max_working_days = 0
@@ -4015,11 +4442,15 @@ class ScheduleApp(QMainWindow):
                 start_row += 1
                 
                 # Ширина столбцов EXCEL ФИО 
-                ws.column_dimensions['A'].width = 35
+                ws.column_dimensions['A'].width = 25
                 
                 # Ширина столбцов EXCEL дней
                 for col in range(2, max_working_days + 2):
                     ws.column_dimensions[get_column_letter(col)].width = 6
+
+                # Устанавливаем высоту строк для данных
+                for row in range(start_row, start_row + len(employees)):
+                    ws.row_dimensions[row].height = 28  # Высота строки в пунктах (1 пункт ≈ 1/72 дюйма)
                 
                 # Ширина столбцов EXCEL Смены\Рег\КЦ\Часы
                 ws.column_dimensions[get_column_letter(RESULT_COLUMNS["Смены"])].width = 8
@@ -4084,7 +4515,7 @@ class ScheduleApp(QMainWindow):
                                 if end_time and end_time != '20:00':
                                     # Извлекаем час из времени
                                     hour_part = end_time.split(':')[0] if ':' in end_time else end_time
-                                    cell.value = f"{hour_part}."
+                                    cell.value = f"{hour_part}"
                                 else:
                                     cell.value = ""
                         else:
@@ -4096,8 +4527,7 @@ class ScheduleApp(QMainWindow):
                         if status in status_styles:
                             cell.fill = status_styles[status]
                     
-                    hours, minutes = self.hours_to_hours_minutes(total_hours)
-                    hours_text = f"{hours}ч {minutes}м"
+                    hours_value = round(total_hours, 1)
                     
                     cell = ws.cell(row=start_row, column=RESULT_COLUMNS["Смены"], value=total_shifts)
                     cell.fill = total_shifts_fill
@@ -4117,7 +4547,7 @@ class ScheduleApp(QMainWindow):
                     cell.font = bold_font
                     cell.border = thin_border
                     
-                    cell = ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"], value=hours_text)
+                    cell = ws.cell(row=start_row, column=RESULT_COLUMNS["Часы"], value=hours_value)
                     cell.fill = hours_fill
                     cell.alignment = center_alignment
                     cell.font = bold_font
