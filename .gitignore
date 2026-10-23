@@ -1,5 +1,8 @@
 *.db
 
+# Local OpenCode configuration (contains machine-specific paths)
+.opencode/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -33,6 +36,8 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+!WorkScheduleClient.spec
+!WorkScheduleServer.spec
 
 # Installer logs
 pip-log.txt
@@ -155,6 +160,7 @@ activemq-data/
 .venv
 env/
 venv/
+venv_client/
 ENV/
 env.bak/
 venv.bak/
