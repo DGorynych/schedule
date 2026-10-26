@@ -3051,7 +3051,7 @@ class ScheduleApp(QMainWindow):
         self.legend_layout.addStretch()
 
         # Метка для отображения времени последнего сохранения
-        self.last_update_label = QLabel("Еще не сохранено")
+        self.last_update_label = QLabel("Изменений нет")
         self.last_update_label.setObjectName("mutedLabel")
         self.legend_layout.addWidget(self.last_update_label)
 
@@ -3083,12 +3083,19 @@ class ScheduleApp(QMainWindow):
         if has_changes:
             self.save_status.setText("Не сохранено")
             set_pill_state(self.save_status, "unsaved")
+            if hasattr(self, "last_update_label"):
+                self.last_update_label.setText("Есть несохраненные изменения")
             # Запускаем таймер автосохранения
             self.last_change_time = datetime.now()
             self.auto_save_timer.start(5 * 60 * 1000)  # 5 минут - 300000 мс
         else:
             self.save_status.setText("Сохранено")
             set_pill_state(self.save_status, "saved")
+            if hasattr(self, "last_update_label"):
+                if self.last_save_time:
+                    self.update_time_display()
+                else:
+                    self.last_update_label.setText("Изменений нет")
             self.auto_save_timer.stop()  # Останавливаем таймер, если изменения сохранены
     
     def init_shortcuts(self):
@@ -4133,9 +4140,9 @@ class ScheduleApp(QMainWindow):
                 minutes = self.last_save_time.minute
                 self.last_update_label.setText(f"Сохранено {hours:02d}:{minutes:02d}")
             except ValueError:
-                self.last_update_label.setText("Еще не сохранено")
+                self.last_update_label.setText("Изменений нет")
         else:
-            self.last_update_label.setText("Еще не сохранено")
+            self.last_update_label.setText("Изменений нет")
     
     def update_time_display(self):
         """Обновление отображения времени последнего сохранения"""
