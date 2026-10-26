@@ -84,6 +84,11 @@ QLabel#statusPill[state="unsaved"] {
     color: #B45309;
     border: 1px solid #FDE68A;
 }
+QLabel#statusPill[state="local"] {
+    background: #EFF6FF;
+    color: #1D4ED8;
+    border: 1px solid #BFDBFE;
+}
 QFrame#appHeader {
     background: #FFFFFF;
     border: 1px solid #E2E8F0;
