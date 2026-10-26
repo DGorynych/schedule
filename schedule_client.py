@@ -46,6 +46,7 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QTabWidget,
     QTimeEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -1886,50 +1887,41 @@ class MonthWidget(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(12, 10, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(6, 3, 6, 4)
+        layout.setSpacing(3)
         self.setLayout(layout)
 
-        # Верхняя панель карточки месяца
+        # Верхняя панель карточки месяца: выбор периода и компактное меню.
         top_layout = QHBoxLayout()
         top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.setSpacing(8)
-
-        month_label = QLabel("ПЕРИОД")
-        month_label.setObjectName("sectionCaption")
-        top_layout.addWidget(month_label)
+        top_layout.setSpacing(4)
 
         self.period_combo = QComboBox()
-        self.period_combo.setMinimumWidth(210)
-        self.period_combo.setFixedHeight(36)
+        self.period_combo.setObjectName("periodCombo")
+        self.period_combo.setMinimumWidth(180)
+        self.period_combo.setFixedHeight(28)
         self.period_combo.currentIndexChanged.connect(self.period_changed)
         top_layout.addWidget(self.period_combo)
         top_layout.addStretch()
 
-        # Кнопка для изменения порядка сотрудников
-        self.order_btn = QPushButton("↑↓")
-        self.order_btn.setFixedSize(36, 36)
-        self.order_btn.setToolTip("Изменить порядок сотрудников")
-        set_variant(self.order_btn, "icon")
-        self.order_btn.clicked.connect(self.change_employee_order)
-        top_layout.addWidget(self.order_btn)
+        self.month_menu = QMenu(self)
+        order_action = self.month_menu.addAction("Изменить порядок")
+        order_action.triggered.connect(self.change_employee_order)
+        export_action = self.month_menu.addAction("Экспорт месяца")
+        export_action.triggered.connect(self._export_this_month)
+        self.month_menu.addSeparator()
+        delete_action = self.month_menu.addAction("Удалить месяц")
+        delete_action.setIcon(self.create_trash_icon())
+        delete_action.triggered.connect(self._delete_this_month)
 
-        # Кнопка экспорта этого месяца в Excel
-        self.export_month_btn = QPushButton("Экспорт")
-        self.export_month_btn.setFixedHeight(36)
-        self.export_month_btn.setMinimumWidth(92)
-        self.export_month_btn.setToolTip("Экспорт месяца в Excel")
-        self.export_month_btn.clicked.connect(self._export_this_month)
-        top_layout.addWidget(self.export_month_btn)
-
-        # Кнопка удаления этого месяца
-        self.delete_month_btn = QPushButton()
-        self.delete_month_btn.setIcon(self.create_trash_icon())
-        self.delete_month_btn.setFixedSize(36, 36)
-        self.delete_month_btn.setToolTip("Удалить месяц")
-        set_variant(self.delete_month_btn, "dangerIcon")
-        self.delete_month_btn.clicked.connect(self._delete_this_month)
-        top_layout.addWidget(self.delete_month_btn)
+        self.month_menu_button = QToolButton()
+        self.month_menu_button.setObjectName("cardMenuButton")
+        self.month_menu_button.setText("⋯")
+        self.month_menu_button.setToolTip("Действия с месяцем")
+        self.month_menu_button.setFixedSize(26, 26)
+        self.month_menu_button.setPopupMode(QToolButton.InstantPopup)
+        self.month_menu_button.setMenu(self.month_menu)
+        top_layout.addWidget(self.month_menu_button)
 
         layout.addLayout(top_layout)
 
@@ -1946,13 +1938,13 @@ class MonthWidget(QWidget):
 
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        table.horizontalHeader().setMinimumSectionSize(28)
-        table.verticalHeader().setMinimumSectionSize(28)
+        table.horizontalHeader().setMinimumSectionSize(24)
+        table.verticalHeader().setMinimumSectionSize(24)
         table.horizontalHeader().setHighlightSections(False)
         table.verticalHeader().setHighlightSections(False)
         table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         table.verticalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        table.verticalHeader().setFixedWidth(172)
+        table.verticalHeader().setFixedWidth(156)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
         table.setAlternatingRowColors(True)
         table.setWordWrap(False)
@@ -1961,16 +1953,16 @@ class MonthWidget(QWidget):
             lambda *_: setattr(self.parent_app, "last_active_widget", self)
         )
 
-        table.verticalHeader().setDefaultSectionSize(30)
+        table.verticalHeader().setDefaultSectionSize(28)
 
         font = table.horizontalHeader().font()
         font.setBold(True)
-        font.setPointSizeF(9.0)
+        font.setPointSizeF(8.5)
         table.horizontalHeader().setFont(font)
 
         font = table.verticalHeader().font()
         font.setBold(True)
-        font.setPointSizeF(9.0)
+        font.setPointSizeF(8.5)
         table.verticalHeader().setFont(font)
     
     def _export_this_month(self):
@@ -2222,8 +2214,8 @@ class MonthWidget(QWidget):
         if table.columnCount() != days + 4:
             return
 
-        day_width = getattr(self, "_day_width", 34)
-        result_width = getattr(self, "_result_width", 64)
+        day_width = getattr(self, "_day_width", 32)
+        result_width = getattr(self, "_result_width", 58)
         for col in range(days):
             table.setColumnWidth(col, day_width)
         for offset in range(4):
@@ -2343,7 +2335,7 @@ class MonthWidget(QWidget):
             weekday = datetime(year, month, col + 1).weekday()
             day_name = DAY_NAMES[weekday]
             count = 0 if sundays[col] else working_counts[col]
-            headers.append(f"{col + 1} {day_name}\n({count})")
+            headers.append(f"{col + 1}{day_name}\n({count})")
         headers += ["Смены", "Рег", "КЦ", "Часы"]
         self.table.setHorizontalHeaderLabels(headers)
         self.update_header_style()
@@ -2573,11 +2565,11 @@ class MonthWidget(QWidget):
             return
         
         # Базовые значения (при масштабе 100%)
-        base_row_height = 30
-        base_font_size = 9.5
-        base_header_font_size = 9.0
-        base_day_width = 34
-        base_result_width = 64
+        base_row_height = 28
+        base_font_size = 9.0
+        base_header_font_size = 8.5
+        base_day_width = 32
+        base_result_width = 58
         
         # Рассчитываем новые значения
         scale_factor = scale_percent / 100.0
@@ -2877,49 +2869,49 @@ class ScheduleApp(QMainWindow):
         self.central_widget.setObjectName("appRoot")
         self.setCentralWidget(self.central_widget)
         self.layout = QVBoxLayout()
-        self.layout.setContentsMargins(20, 16, 20, 16)
-        self.layout.setSpacing(14)
+        self.layout.setContentsMargins(6, 6, 6, 6)
+        self.layout.setSpacing(4)
         self.central_widget.setLayout(self.layout)
         self.setMinimumSize(1100, 720)
-        
-        # Создаем меню
-        menubar = self.menuBar()
-        
+
+        # Компактное меню в шапке вместо отдельной строки меню.
+        self.app_menu = QMenu(self)
+
         # Меню "Настройки"
-        settings_menu = menubar.addMenu('Настройки')
+        settings_menu = self.app_menu.addMenu('Настройки')
         connection_action = QAction('Настройки подключения', self)
         connection_action.triggered.connect(self.show_connection_dialog)
         settings_menu.addAction(connection_action)
         export_action = QAction('Экспорт', self)
         export_action.triggered.connect(self.show_export_settings_dialog)
         settings_menu.addAction(export_action)
-        
+
         # Меню "Сотрудники"
-        employees_menu = menubar.addMenu('Сотрудники')
-        
+        employees_menu = self.app_menu.addMenu('Сотрудники')
+
         # Пункт "Управление сотрудниками"
-        manage_employees_action = QAction('Управление сотрудники', self)
+        manage_employees_action = QAction('Управление сотрудниками', self)
         manage_employees_action.triggered.connect(self.show_employee_manager)
         employees_menu.addAction(manage_employees_action)
-        
+
         employees_menu.addSeparator()
-        
+
         # Пункт "Добавить сотрудника" (для быстрого доступа)
         add_employee_action = QAction('Добавить сотрудника', self)
         add_employee_action.triggered.connect(self.add_employee_dialog)
         employees_menu.addAction(add_employee_action)
-        
+
         # Меню "Масштаб"
-        scale_menu = menubar.addMenu('Масштаб')
+        scale_menu = self.app_menu.addMenu('Масштаб')
         self.scale_actions = []
-        
+
         # Создаем варианты масштаба от 10% до 100% с шагом 10%
         for scale_value in range(10, 101, 10):
             scale_action = QAction(f'{scale_value}%', self)
             scale_action.triggered.connect(lambda checked, sv=scale_value: self.set_scale_by_menu(sv))
             scale_menu.addAction(scale_action)
             self.scale_actions.append(scale_action)
-            
+
             # Отмечаем текущий масштаб
             if scale_value == self.current_scale:
                 scale_action.setChecked(True)
@@ -2933,57 +2925,60 @@ class ScheduleApp(QMainWindow):
         self.save_status.setObjectName("statusPill")
         set_pill_state(self.save_status, "saved")
 
-        # Шапка приложения
+        # Шапка приложения: только название, статусы и компактное меню.
         header = QFrame()
         header.setObjectName("appHeader")
         header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(20, 16, 20, 16)
-        header_layout.setSpacing(16)
+        header_layout.setContentsMargins(4, 2, 4, 2)
+        header_layout.setSpacing(8)
 
-        title_block = QVBoxLayout()
-        title_block.setSpacing(2)
         title_label = QLabel("Рабочее расписание")
         title_label.setObjectName("appTitle")
-        subtitle_label = QLabel("Планирование смен и контроль рабочего времени")
-        subtitle_label.setObjectName("appSubtitle")
-        title_block.addWidget(title_label)
-        title_block.addWidget(subtitle_label)
-
-        header_layout.addLayout(title_block)
+        header_layout.addWidget(title_label)
         header_layout.addStretch()
         header_layout.addWidget(self.connection_status)
         header_layout.addWidget(self.save_status)
+
+        self.app_menu_button = QToolButton()
+        self.app_menu_button.setObjectName("appMenuButton")
+        self.app_menu_button.setText("☰")
+        self.app_menu_button.setToolTip("Меню")
+        self.app_menu_button.setFixedSize(28, 28)
+        self.app_menu_button.setPopupMode(QToolButton.InstantPopup)
+        self.app_menu_button.setMenu(self.app_menu)
+        header_layout.addWidget(self.app_menu_button)
+
         self.layout.addWidget(header)
 
         # Панель действий
         toolbar = QFrame()
         toolbar.setObjectName("toolbarCard")
         self.buttons_layout = QHBoxLayout(toolbar)
-        self.buttons_layout.setContentsMargins(12, 10, 12, 10)
-        self.buttons_layout.setSpacing(8)
+        self.buttons_layout.setContentsMargins(3, 3, 3, 4)
+        self.buttons_layout.setSpacing(6)
 
         self.new_month_btn = QPushButton("Новый месяц")
-        self.new_month_btn.setFixedHeight(36)
-        self.new_month_btn.setMinimumWidth(132)
+        self.new_month_btn.setFixedHeight(30)
+        self.new_month_btn.setMinimumWidth(116)
         set_variant(self.new_month_btn, "primary")
         self.new_month_btn.clicked.connect(self.select_month_and_year)
         self.buttons_layout.addWidget(self.new_month_btn)
 
         self.add_employee_btn = QPushButton("Новый сотрудник")
-        self.add_employee_btn.setFixedHeight(36)
-        self.add_employee_btn.setMinimumWidth(146)
+        self.add_employee_btn.setFixedHeight(30)
+        self.add_employee_btn.setMinimumWidth(132)
         self.add_employee_btn.clicked.connect(self.add_employee_dialog)
         self.buttons_layout.addWidget(self.add_employee_btn)
 
         self.add_to_period_btn = QPushButton("Добавить в месяц")
-        self.add_to_period_btn.setFixedHeight(36)
-        self.add_to_period_btn.setMinimumWidth(154)
+        self.add_to_period_btn.setFixedHeight(30)
+        self.add_to_period_btn.setMinimumWidth(140)
         self.add_to_period_btn.clicked.connect(self.add_employees_to_period)
         self.buttons_layout.addWidget(self.add_to_period_btn)
 
         self.open_doc_btn = QPushButton("Открыть документ")
-        self.open_doc_btn.setFixedHeight(36)
-        self.open_doc_btn.setMinimumWidth(154)
+        self.open_doc_btn.setFixedHeight(30)
+        self.open_doc_btn.setMinimumWidth(140)
         set_variant(self.open_doc_btn, "ghost")
         self.open_doc_btn.clicked.connect(self.open_document)
         self.buttons_layout.addWidget(self.open_doc_btn)
@@ -2991,18 +2986,18 @@ class ScheduleApp(QMainWindow):
         self.buttons_layout.addStretch()
 
         self.save_btn = QPushButton("Сохранить")
-        self.save_btn.setFixedHeight(36)
-        self.save_btn.setMinimumWidth(132)
+        self.save_btn.setFixedHeight(30)
+        self.save_btn.setMinimumWidth(116)
         set_variant(self.save_btn, "success")
         self.save_btn.clicked.connect(self.save_data)
         self.buttons_layout.addWidget(self.save_btn)
 
         self.layout.addWidget(toolbar)
-        
+
         # Создаем сплиттер для вертикального расположения месяцев
         self.splitter = QSplitter(Qt.Vertical)
         self.splitter.setObjectName("mainSplitter")
-        self.splitter.setHandleWidth(8)
+        self.splitter.setHandleWidth(2)
         self.layout.addWidget(self.splitter)
         
         # Создаем два виджета месяцев
@@ -3021,25 +3016,18 @@ class ScheduleApp(QMainWindow):
             sizes = [300, 300]
         self.splitter.setSizes(sizes if len(sizes) == 2 else [300, 300])
         
-        # Легенда статусов и действия внизу
-        legend_card = QFrame()
-        legend_card.setObjectName("legendCard")
-        self.legend_layout = QHBoxLayout(legend_card)
-        self.legend_layout.setContentsMargins(14, 8, 14, 8)
-        self.legend_layout.setSpacing(10)
-
-        legend_caption = QLabel("СТАТУСЫ")
-        legend_caption.setObjectName("sectionCaption")
-        self.legend_layout.addWidget(legend_caption)
-        self.legend_layout.addSpacing(4)
+        # Компактная легенда статусов и действия внизу.
+        self.legend_layout = QHBoxLayout()
+        self.legend_layout.setContentsMargins(4, 1, 4, 0)
+        self.legend_layout.setSpacing(8)
 
         for status, (icon, text, color, _) in self.status_mapping.items():
             legend_item = QHBoxLayout()
-            legend_item.setSpacing(5)
+            legend_item.setSpacing(4)
             color_label = QLabel("")
-            color_label.setFixedSize(10, 10)
+            color_label.setFixedSize(8, 8)
             color_label.setStyleSheet(
-                f"background: {color.name()}; border: 1px solid #CBD5E1; border-radius: 5px;"
+                f"background: {color.name()}; border: 1px solid #CBD5E1; border-radius: 4px;"
             )
             legend_item.addWidget(color_label)
 
@@ -3057,18 +3045,20 @@ class ScheduleApp(QMainWindow):
 
         # Кнопка обновления в правом нижнем углу
         self.refresh_btn = QPushButton("Обновить")
-        self.refresh_btn.setFixedHeight(32)
-        self.refresh_btn.setMinimumWidth(96)
+        self.refresh_btn.setFixedHeight(26)
+        self.refresh_btn.setMinimumWidth(80)
         set_variant(self.refresh_btn, "ghost")
         self.refresh_btn.clicked.connect(self.refresh_data)
         self.legend_layout.addWidget(self.refresh_btn)
 
-        self.layout.addWidget(legend_card)
+        self.layout.addLayout(self.legend_layout)
 
         # Сразу показываем локальные данные; после подключения они обновятся.
         self.load_initial_data()
 
         self.statusBar().showMessage("Готово")
+        self.statusBar().setSizeGripEnabled(False)
+        self.statusBar().hide()
     
     def show_employee_manager(self):
         """Показать диалог управления сотрудниками"""

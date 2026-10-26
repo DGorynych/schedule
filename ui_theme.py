@@ -36,12 +36,12 @@ QLabel {
 }
 QLabel#appTitle {
     color: #0F172A;
-    font-size: 18pt;
+    font-size: 14pt;
     font-weight: 700;
 }
 QLabel#appSubtitle {
     color: #64748B;
-    font-size: 9.5pt;
+    font-size: 8.5pt;
 }
 QLabel#sectionCaption {
     color: #94A3B8;
@@ -51,20 +51,20 @@ QLabel#sectionCaption {
 }
 QLabel#mutedLabel {
     color: #64748B;
-    font-size: 9pt;
+    font-size: 8.5pt;
 }
 QLabel#legendLabel {
     color: #475569;
-    font-size: 9pt;
+    font-size: 8.5pt;
 }
 QLabel#hintLabel {
     color: #64748B;
     font-style: italic;
 }
 QLabel#statusPill {
-    border-radius: 10px;
-    padding: 5px 10px;
-    font-size: 9pt;
+    border-radius: 8px;
+    padding: 3px 8px;
+    font-size: 8.5pt;
     font-weight: 600;
 }
 QLabel#statusPill[state="connected"],
@@ -90,28 +90,32 @@ QLabel#statusPill[state="local"] {
     border: 1px solid #BFDBFE;
 }
 QFrame#appHeader {
-    background: #FFFFFF;
-    border: 1px solid #E2E8F0;
-    border-radius: 14px;
+    background: transparent;
+    border: none;
 }
-QFrame#toolbarCard,
+QFrame#toolbarCard {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #E2E8F0;
+    border-radius: 0;
+}
 QFrame#legendCard {
-    background: #FFFFFF;
-    border: 1px solid #E2E8F0;
-    border-radius: 12px;
+    background: transparent;
+    border: none;
 }
 QWidget#monthCard {
     background: #FFFFFF;
     border: 1px solid #E2E8F0;
-    border-radius: 12px;
+    border-radius: 10px;
 }
 QPushButton {
     background: #FFFFFF;
     color: #334155;
     border: 1px solid #E2E8F0;
-    border-radius: 8px;
-    padding: 0 14px;
-    min-height: 34px;
+    border-radius: 7px;
+    padding: 0 12px;
+    min-height: 30px;
+    font-size: 9.5pt;
     font-weight: 600;
 }
 QPushButton:hover {
@@ -194,6 +198,27 @@ QPushButton[variant="dangerIcon"]:hover {
 QPushButton[variant="dangerIcon"]:pressed {
     background: #FECACA;
 }
+QToolButton#appMenuButton,
+QToolButton#cardMenuButton {
+    background: transparent;
+    color: #64748B;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 0;
+    font-size: 14pt;
+    font-weight: 600;
+}
+QToolButton#appMenuButton:hover,
+QToolButton#cardMenuButton:hover {
+    background: #F1F5F9;
+    color: #334155;
+    border-color: #E2E8F0;
+}
+QToolButton#appMenuButton::menu-indicator,
+QToolButton#cardMenuButton::menu-indicator {
+    image: none;
+    width: 0;
+}
 QDialogButtonBox QPushButton {
     min-width: 92px;
 }
@@ -210,9 +235,9 @@ QLineEdit, QComboBox, QTimeEdit, QSpinBox, QDateEdit {
     background: #FFFFFF;
     color: #1E293B;
     border: 1px solid #E2E8F0;
-    border-radius: 8px;
-    padding: 0 10px;
-    min-height: 34px;
+    border-radius: 7px;
+    padding: 0 8px;
+    min-height: 30px;
     selection-background-color: #DBEAFE;
 }
 QLineEdit:focus, QComboBox:focus, QTimeEdit:focus, QSpinBox:focus, QDateEdit:focus {
@@ -224,7 +249,15 @@ QLineEdit:disabled, QComboBox:disabled, QTimeEdit:disabled {
 }
 QComboBox::drop-down {
     border: none;
-    width: 26px;
+    width: 22px;
+}
+QComboBox#periodCombo {
+    min-height: 26px;
+    padding: 0 6px;
+    font-size: 9pt;
+}
+QComboBox#periodCombo::drop-down {
+    width: 20px;
 }
 QComboBox QAbstractItemView {
     background: #FFFFFF;
@@ -245,7 +278,7 @@ QTableWidget#scheduleTable {
     selection-color: #0F172A;
 }
 QTableWidget#scheduleTable::item {
-    padding: 0 4px;
+    padding: 0 2px;
 }
 QTableWidget#scheduleTable::item:selected {
     background: transparent;
@@ -254,14 +287,14 @@ QTableWidget#scheduleTable::item:selected {
 QHeaderView::section {
     background: #F8FAFC;
     color: #475569;
-    padding: 6px 2px;
+    padding: 2px 1px;
     border: none;
     border-right: 1px solid #EEF2F7;
     border-bottom: 1px solid #E2E8F0;
     font-weight: 600;
 }
 QHeaderView::section:vertical {
-    padding: 0 10px;
+    padding: 0 8px;
     text-align: left;
 }
 QTableCornerButton::section {
@@ -293,7 +326,7 @@ QMenu {
     padding: 6px;
 }
 QMenu::item {
-    padding: 7px 26px 7px 12px;
+    padding: 6px 22px 6px 12px;
     border-radius: 6px;
 }
 QMenu::item:selected {
@@ -306,9 +339,10 @@ QMenu::separator {
     margin: 5px 8px;
 }
 QStatusBar {
-    background: #FFFFFF;
-    color: #64748B;
-    border-top: 1px solid #E2E8F0;
+    background: transparent;
+    color: #94A3B8;
+    border-top: none;
+    font-size: 8pt;
 }
 QStatusBar::item {
     border: none;
