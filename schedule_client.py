@@ -1096,9 +1096,12 @@ class ConnectionDialog(QDialog):
         self.setMinimumWidth(400)
         
         layout = QVBoxLayout()
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
         self.setLayout(layout)
         
         form_layout = QFormLayout()
+        form_layout.setSpacing(10)
         
         self.host_edit = QLineEdit()
         self.host_edit.setText("localhost")
@@ -1110,6 +1113,7 @@ class ConnectionDialog(QDialog):
         
         self.status_label = QLabel("Не подключено")
         self.status_label.setObjectName("statusPill")
+        self.status_label.setMaximumWidth(240)
         set_pill_state(self.status_label, "offline")
         form_layout.addRow("Статус:", self.status_label)
         
@@ -1882,8 +1886,8 @@ class MonthWidget(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(14, 12, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(12, 10, 12, 12)
+        layout.setSpacing(8)
         self.setLayout(layout)
 
         # Верхняя панель карточки месяца
@@ -2203,7 +2207,36 @@ class MonthWidget(QWidget):
             self.table.is_loading = False
             self.table.setUpdatesEnabled(True)
             self.table.viewport().update()
-    
+            QTimer.singleShot(0, self.fit_table_width)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit_table_width()
+
+    def fit_table_width(self):
+        """Растягивает дни по ширине карточки, сохраняя компактные итоги."""
+        table = getattr(self, "table", None)
+        if table is None or not self.current_period:
+            return
+        days = days_in_month(self.current_period)
+        if table.columnCount() != days + 4:
+            return
+
+        day_width = getattr(self, "_day_width", 34)
+        result_width = getattr(self, "_result_width", 64)
+        for col in range(days):
+            table.setColumnWidth(col, day_width)
+        for offset in range(4):
+            table.setColumnWidth(days + offset, result_width)
+
+        available = table.viewport().width()
+        total = days * day_width + 4 * result_width
+        if available > total and days:
+            per_day = (available - total) // days
+            if per_day > 0:
+                for col in range(days):
+                    table.setColumnWidth(col, day_width + per_day)
+
     def update_header_style(self):
         """Обновляет стиль заголовков таблицы"""
         if not self.sunday_columns:
@@ -2310,7 +2343,7 @@ class MonthWidget(QWidget):
             weekday = datetime(year, month, col + 1).weekday()
             day_name = DAY_NAMES[weekday]
             count = 0 if sundays[col] else working_counts[col]
-            headers.append(f"{col + 1}\n{day_name}\n({count})")
+            headers.append(f"{col + 1} {day_name}\n({count})")
         headers += ["Смены", "Рег", "КЦ", "Часы"]
         self.table.setHorizontalHeaderLabels(headers)
         self.update_header_style()
@@ -2554,21 +2587,23 @@ class MonthWidget(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(new_row_height)
         
         # Устанавливаем ширину столбцов дней
-        days_in_month = self.table.columnCount() - 4
-        for col in range(days_in_month):
-            new_width = int(base_day_width * scale_factor)
-            self.table.setColumnWidth(col, max(new_width, 10))  # Минимум 10 пикселей
+        days_count = self.table.columnCount() - 4
+        new_day_width = max(int(base_day_width * scale_factor), 10)
+        new_result_width = max(int(base_result_width * scale_factor), 30)
+        self._day_width = new_day_width
+        self._result_width = new_result_width
+        for col in range(days_count):
+            self.table.setColumnWidth(col, new_day_width)
         
         # Устанавливаем ширину итоговых столбцов
-        if days_in_month < self.table.columnCount():
-            new_result_width = int(base_result_width * scale_factor)
-            self.table.setColumnWidth(days_in_month, max(new_result_width, 30))  # Смены
-        if days_in_month + 1 < self.table.columnCount():
-            self.table.setColumnWidth(days_in_month + 1, max(new_result_width, 30))  # Рег
-        if days_in_month + 2 < self.table.columnCount():
-            self.table.setColumnWidth(days_in_month + 2, max(new_result_width, 30))  # КЦ
-        if days_in_month + 3 < self.table.columnCount():
-            self.table.setColumnWidth(days_in_month + 3, max(new_result_width, 30))  # Часы
+        if days_count < self.table.columnCount():
+            self.table.setColumnWidth(days_count, new_result_width)  # Смены
+        if days_count + 1 < self.table.columnCount():
+            self.table.setColumnWidth(days_count + 1, new_result_width)  # Рег
+        if days_count + 2 < self.table.columnCount():
+            self.table.setColumnWidth(days_count + 2, new_result_width)  # КЦ
+        if days_count + 3 < self.table.columnCount():
+            self.table.setColumnWidth(days_count + 3, new_result_width)  # Часы
         
         # Обновляем шрифты
         font = self.table.font()
@@ -2586,6 +2621,7 @@ class MonthWidget(QWidget):
         
         # Обновляем стиль заголовков после изменения масштаба
         self.update_header_style()
+        self.fit_table_width()
 
 
 class EmployeeSelectionDialog(QDialog):
