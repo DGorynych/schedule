@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -38,6 +39,9 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QShortcut,
     QSplitter,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -76,6 +80,7 @@ from schedule_common import (
     sort_periods,
     sunday_flags,
 )
+from ui_theme import apply_theme, set_pill_state, set_variant
 
 logger = logging.getLogger(__name__)
 
@@ -1104,7 +1109,8 @@ class ConnectionDialog(QDialog):
         form_layout.addRow("Порт:", self.port_edit)
         
         self.status_label = QLabel("Не подключено")
-        self.status_label.setStyleSheet("color: red; font-weight: bold;")
+        self.status_label.setObjectName("statusPill")
+        set_pill_state(self.status_label, "offline")
         form_layout.addRow("Статус:", self.status_label)
         
         layout.addLayout(form_layout)
@@ -1128,17 +1134,17 @@ class ConnectionDialog(QDialog):
             port = int(self.port_edit.text())
         except ValueError:
             self.status_label.setText("Неверный порт")
-            self.status_label.setStyleSheet("color: red; font-weight: bold;")
+            set_pill_state(self.status_label, "error")
             return
         
         try:
             with socket.create_connection((host, port), timeout=5):
                 pass
             self.status_label.setText("Подключено")
-            self.status_label.setStyleSheet("color: green; font-weight: bold;")
+            set_pill_state(self.status_label, "connected")
         except OSError:
             self.status_label.setText("Ошибка подключения")
-            self.status_label.setStyleSheet("color: red; font-weight: bold;")
+            set_pill_state(self.status_label, "error")
     
     def get_connection_params(self):
         return self.host_edit.text(), int(self.port_edit.text())
@@ -1152,7 +1158,7 @@ class ConnectionDialog(QDialog):
             port = 0
         if not host or not 0 < port < 65536:
             self.status_label.setText("Неверный адрес или порт")
-            self.status_label.setStyleSheet("color: red; font-weight: bold;")
+            set_pill_state(self.status_label, "error")
             return
         super().accept()
 
@@ -1364,12 +1370,30 @@ class NoteDialog(QDialog):
             return ''
 
 
+class ScheduleItemDelegate(QStyledItemDelegate):
+    """Сохраняет цвет статуса и рисует синюю рамку выбранной ячейки."""
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        opt.state &= ~QStyle.State_Selected
+        opt.state &= ~QStyle.State_HasFocus
+        super().paint(painter, opt, index)
+
+        if option.state & QStyle.State_Selected:
+            painter.save()
+            painter.setPen(QPen(QColor("#2563EB"), 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(option.rect.adjusted(1, 1, -1, -1))
+            painter.restore()
+
+
 class NoteTableWidget(QTableWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_widget = parent
         self.is_loading = False
         self._pending_updates = False
+        self.setItemDelegate(ScheduleItemDelegate(self))
 
         # Debounce для пересчёта итогов: при массовой загрузке таймер не нужен.
         self._update_timer = QTimer(self)
@@ -1445,39 +1469,59 @@ class EmployeeManagerDialog(QDialog):
     
     def setup_active_tab(self):
         """Настройка вкладки активных сотрудников"""
+        self.active_layout.setContentsMargins(12, 12, 12, 12)
+        self.active_layout.setSpacing(10)
+
         # Панель кнопок
         button_layout = QHBoxLayout()
-        
+        button_layout.setSpacing(8)
+
         self.add_btn = QPushButton("Добавить")
+        self.add_btn.setFixedHeight(34)
+        self.add_btn.setMinimumWidth(128)
+        set_variant(self.add_btn, "primary")
         self.add_btn.clicked.connect(self.add_employee)
         button_layout.addWidget(self.add_btn)
-        
+
         self.edit_btn = QPushButton("Редактировать")
+        self.edit_btn.setFixedHeight(34)
+        self.edit_btn.setMinimumWidth(140)
         self.edit_btn.clicked.connect(self.edit_employee)
         button_layout.addWidget(self.edit_btn)
-        
+
         self.delete_btn = QPushButton("Удалить")
+        self.delete_btn.setFixedHeight(34)
+        self.delete_btn.setMinimumWidth(116)
+        set_variant(self.delete_btn, "danger")
         self.delete_btn.clicked.connect(self.delete_employee)
         button_layout.addWidget(self.delete_btn)
-        
+
+        button_layout.addStretch()
         self.active_layout.addLayout(button_layout)
-        
+
         # Список сотрудников
         self.active_list = QListWidget()
         self.active_list.itemDoubleClicked.connect(self.edit_employee)
         self.active_layout.addWidget(self.active_list)
-    
+
     def setup_deleted_tab(self):
         """Настройка вкладки удаленных сотрудников"""
+        self.deleted_layout.setContentsMargins(12, 12, 12, 12)
+        self.deleted_layout.setSpacing(10)
+
         # Панель кнопок
         button_layout = QHBoxLayout()
-        
+        button_layout.setSpacing(8)
+
         self.restore_btn = QPushButton("Восстановить")
+        self.restore_btn.setFixedHeight(34)
+        self.restore_btn.setMinimumWidth(140)
         self.restore_btn.clicked.connect(self.restore_employee)
         button_layout.addWidget(self.restore_btn)
-        
+
+        button_layout.addStretch()
         self.deleted_layout.addLayout(button_layout)
-        
+
         # Список удаленных сотрудников
         self.deleted_list = QListWidget()
         self.deleted_layout.addWidget(self.deleted_list)
@@ -1810,7 +1854,7 @@ class MonthWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         
         # Контурная кисть и перо (белый цвет для контраста на красном фоне)
-        pen = QPen(QColor(255, 255, 255), 1.8)
+        pen = QPen(QColor(185, 28, 28), 1.8)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
@@ -1834,148 +1878,95 @@ class MonthWidget(QWidget):
         return QIcon(pixmap)
     
     def initUI(self):
+        self.setObjectName("monthCard")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+
         layout = QVBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(10)
         self.setLayout(layout)
-        
-        # Верхняя панель с выбором месяца
+
+        # Верхняя панель карточки месяца
         top_layout = QHBoxLayout()
-        top_layout.setContentsMargins(1, 10, 1, 1)
-        
-        self.period_combo = QComboBox()
-        self.period_combo.setMinimumWidth(200)
-        self.period_combo.setFixedHeight(24)
-        self.period_combo.setStyleSheet("""
-            QComboBox {
-                min-width: 120px;
-                max-width: 150px;
-                height: 24px;
-                font-size: 12px;
-                padding: 2px;
-                border: 1px solid #ccc;
-                border-radius: 3px;
-            }
-            QComboBox::drop-down {
-                width: 20px;
-                border: none;
-            }
-            QComboBox QAbstractItemView {
-                min-width: 120px;
-                font-size: 12px;
-            }
-        """)
-        
-        self.period_combo.currentIndexChanged.connect(self.period_changed)
-        
-        month_label = QLabel()
-        month_label_font = month_label.font()
-        month_label_font.setPointSize(12)
-        month_label.setFont(month_label_font)
-        
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(8)
+
+        month_label = QLabel("ПЕРИОД")
+        month_label.setObjectName("sectionCaption")
         top_layout.addWidget(month_label)
+
+        self.period_combo = QComboBox()
+        self.period_combo.setMinimumWidth(210)
+        self.period_combo.setFixedHeight(36)
+        self.period_combo.currentIndexChanged.connect(self.period_changed)
         top_layout.addWidget(self.period_combo)
-        
+        top_layout.addStretch()
+
         # Кнопка для изменения порядка сотрудников
         self.order_btn = QPushButton("↑↓")
-        self.order_btn.setFixedHeight(24)
-        self.order_btn.setFixedWidth(24)
-        self.order_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #808080;
-                color: white;
-                border: none;
-                border-radius: 7px;
-                font-size: 14px;
-                font-weight: 400;
-            }
-            QPushButton:hover {
-                background-color: #696969;
-            }
-            QPushButton:pressed {
-            }
-        """)
+        self.order_btn.setFixedSize(36, 36)
+        self.order_btn.setToolTip("Изменить порядок сотрудников")
+        set_variant(self.order_btn, "icon")
         self.order_btn.clicked.connect(self.change_employee_order)
         top_layout.addWidget(self.order_btn)
-        
+
         # Кнопка экспорта этого месяца в Excel
         self.export_month_btn = QPushButton("Экспорт")
-        self.export_month_btn.setFixedHeight(24)
-        self.export_month_btn.setFixedWidth(70)
-        self.export_month_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #808080;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #696969;
-            }
-            QPushButton:pressed {
-                background-color: #505050;
-            }
-        """)
+        self.export_month_btn.setFixedHeight(36)
+        self.export_month_btn.setMinimumWidth(92)
+        self.export_month_btn.setToolTip("Экспорт месяца в Excel")
         self.export_month_btn.clicked.connect(self._export_this_month)
         top_layout.addWidget(self.export_month_btn)
-        
+
         # Кнопка удаления этого месяца
         self.delete_month_btn = QPushButton()
         self.delete_month_btn.setIcon(self.create_trash_icon())
-        self.delete_month_btn.setFixedHeight(24)
-        self.delete_month_btn.setFixedWidth(30)
+        self.delete_month_btn.setFixedSize(36, 36)
         self.delete_month_btn.setToolTip("Удалить месяц")
-        self.delete_month_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #dc3545;
-                color: white;
-                border: none;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #c82333;
-            }
-            QPushButton:pressed {
-                background-color: #bd2130;
-            }
-        """)
+        set_variant(self.delete_month_btn, "dangerIcon")
         self.delete_month_btn.clicked.connect(self._delete_this_month)
         top_layout.addWidget(self.delete_month_btn)
-        
-        top_layout.addStretch()
-        
+
         layout.addLayout(top_layout)
-        
+
         # Таблица
         self.table = NoteTableWidget(self)
         self.setup_table(self.table)
         layout.addWidget(self.table)
     
     def setup_table(self, table):
+        table.setObjectName("scheduleTable")
         table.setSelectionMode(QTableWidget.ExtendedSelection)
         table.setContextMenuPolicy(Qt.CustomContextMenu)
         table.customContextMenuRequested.connect(self.show_context_menu)
-        
+
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        table.horizontalHeader().setMinimumSectionSize(28)
+        table.verticalHeader().setMinimumSectionSize(28)
+        table.horizontalHeader().setHighlightSections(False)
+        table.verticalHeader().setHighlightSections(False)
+        table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
+        table.verticalHeader().setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        table.verticalHeader().setFixedWidth(172)
         table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.setWordWrap(False)
+        table.setShowGrid(True)
         table.cellClicked.connect(
             lambda *_: setattr(self.parent_app, "last_active_widget", self)
         )
-        
-        # Уменьшил высоту строк
-        table.verticalHeader().setDefaultSectionSize(22)
-        
-        # Уменьшил размеры шрифтов заголовков
+
+        table.verticalHeader().setDefaultSectionSize(30)
+
         font = table.horizontalHeader().font()
         font.setBold(True)
-        font.setPointSize(10)
+        font.setPointSizeF(9.0)
         table.horizontalHeader().setFont(font)
-        
+
         font = table.verticalHeader().font()
         font.setBold(True)
-        font.setPointSize(10)
+        font.setPointSizeF(9.0)
         table.verticalHeader().setFont(font)
     
     def _export_this_month(self):
@@ -2019,25 +2010,6 @@ class MonthWidget(QWidget):
         # Создаем список с возможностью перетаскивания
         list_widget = QListWidget()
 
-        list_widget.setStyleSheet("""
-            QListWidget {
-                border: 1px solid #ccc;
-                border-radius: 3px;
-                padding: 2px;
-            }
-            QListWidget::item {
-                padding: 5px;
-                border-bottom: 1px solid #eee;
-            }
-            QListWidget::item:selected {
-                color: black;                   
-                background-color: #e0e0e0;
-            }
-            QListWidget::item:hover {
-                background-color: #f5f5f5;
-            }
-        """)
-        
         # Устанавливаем режим перетаскивания, который позволяет только перемещать между позициями
         list_widget.setDragDropMode(QListWidget.InternalMove)
         
@@ -2055,7 +2027,7 @@ class MonthWidget(QWidget):
         # Добавляем инструкцию
         instruction_label = QLabel("Перетащите сотрудника в нужную позицию между другими сотрудниками")
         instruction_label.setWordWrap(True)
-        instruction_label.setStyleSheet("color: #666; font-style: italic; padding: 5px;")
+        instruction_label.setObjectName("hintLabel")
         layout.addWidget(instruction_label)
         
         # Кнопки для ручного перемещения (дополнительная опция)
@@ -2245,16 +2217,23 @@ class MonthWidget(QWidget):
             if col in self.sunday_columns:
                 style_sheet += f"""
                     QHeaderView::section:nth-child({col + 1}) {{
-                        background-color: #FFCCCC;
-                        color: black;
-                        font-weight: bold;
+                        background-color: #FFF1F2;
+                        color: #B91C1C;
+                        font-weight: 600;
+                        padding: 6px 2px;
+                        border-right: 1px solid #EEF2F7;
+                        border-bottom: 1px solid #E2E8F0;
                     }}
                 """
             else:
                 style_sheet += f"""
                     QHeaderView::section:nth-child({col + 1}) {{
-                        background-color: white;
-                        color: black;
+                        background-color: #F8FAFC;
+                        color: #475569;
+                        font-weight: 600;
+                        padding: 6px 2px;
+                        border-right: 1px solid #EEF2F7;
+                        border-bottom: 1px solid #E2E8F0;
                     }}
                 """
         
@@ -2315,9 +2294,14 @@ class MonthWidget(QWidget):
                     cell = QTableWidgetItem()
                     cell.setTextAlignment(Qt.AlignCenter)
                     cell.setFlags(cell.flags() ^ Qt.ItemIsEditable)
-                    cell.setFont(QFont("Arial", font_size, QFont.Bold))
+                    cell_font = QFont(self.table.font())
+                    cell_font.setBold(True)
+                    cell_font.setPointSizeF(max(8.0, float(font_size)))
+                    cell.setFont(cell_font)
                     self.table.setItem(row, column, cell)
                 cell.setText(text)
+                cell.setBackground(QColor("#F8FAFC"))
+                cell.setForeground(QColor("#334155"))
 
         parsed = parse_period(self.current_period)
         year, month = (parsed[0], parsed[1]) if parsed else (2000, 1)
@@ -2556,11 +2540,11 @@ class MonthWidget(QWidget):
             return
         
         # Базовые значения (при масштабе 100%)
-        base_row_height = 22
-        base_font_size = 9
-        base_header_font_size = 10
-        base_day_width = 15
-        base_result_width = 60
+        base_row_height = 30
+        base_font_size = 9.5
+        base_header_font_size = 9.0
+        base_day_width = 34
+        base_result_width = 64
         
         # Рассчитываем новые значения
         scale_factor = scale_percent / 100.0
@@ -2832,7 +2816,8 @@ class ScheduleApp(QMainWindow):
             3: ("", "Архив", QColor("#FFB347"), DEFAULT_WORK_HOURS),
             4: ("", "Пусто", QColor("#FFFFFF"), 0)
         }
-        
+
+        apply_theme(QApplication.instance())
         self.initUI()
         self.init_shortcuts()
         self.network_manager.on_connection_change = self.on_connection_change
@@ -2853,11 +2838,13 @@ class ScheduleApp(QMainWindow):
         self.setWindowIcon(QIcon(resource_path("schedule.ico")))
         
         self.central_widget = QWidget()
+        self.central_widget.setObjectName("appRoot")
         self.setCentralWidget(self.central_widget)
         self.layout = QVBoxLayout()
-        self.layout.setContentsMargins(5, 5, 5, 5)
-        self.layout.setSpacing(5)
+        self.layout.setContentsMargins(20, 16, 20, 16)
+        self.layout.setSpacing(14)
         self.central_widget.setLayout(self.layout)
+        self.setMinimumSize(1100, 720)
         
         # Создаем меню
         menubar = self.menuBar()
@@ -2901,156 +2888,85 @@ class ScheduleApp(QMainWindow):
             if scale_value == self.current_scale:
                 scale_action.setChecked(True)
         
-        # Статус подключения в тулбаре
+        # Статусы соединения и сохранения — компактные плашки в шапке.
         self.connection_status = QLabel("Не подключено")
-        self.connection_status.setStyleSheet("color: red; font-weight: bold; padding: 2px;")
-        
-        # Статус сохранения в тулбаре
+        self.connection_status.setObjectName("statusPill")
+        set_pill_state(self.connection_status, "offline")
+
         self.save_status = QLabel("Сохранено")
-        self.save_status.setStyleSheet("color: green; font-weight: bold; padding: 2px;")
-        
-        # Добавляем виджеты в статусбар
-        self.statusBar().addPermanentWidget(self.connection_status)
-        self.statusBar().addPermanentWidget(self.save_status)
-        
-        # Верхняя панель с кнопками
-        self.buttons_layout = QHBoxLayout()
-        self.buttons_layout.setContentsMargins(0, 0, 0, 0)
-        self.buttons_layout.setSpacing(5)
-        
-        # Левая часть панели - основные кнопки
-        left_buttons_layout = QHBoxLayout()
-        left_buttons_layout.setSpacing(5)
-        
-        # Кнопка Новый месяц
+        self.save_status.setObjectName("statusPill")
+        set_pill_state(self.save_status, "saved")
+
+        # Шапка приложения
+        header = QFrame()
+        header.setObjectName("appHeader")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(20, 16, 20, 16)
+        header_layout.setSpacing(16)
+
+        title_block = QVBoxLayout()
+        title_block.setSpacing(2)
+        title_label = QLabel("Рабочее расписание")
+        title_label.setObjectName("appTitle")
+        subtitle_label = QLabel("Планирование смен и контроль рабочего времени")
+        subtitle_label.setObjectName("appSubtitle")
+        title_block.addWidget(title_label)
+        title_block.addWidget(subtitle_label)
+
+        header_layout.addLayout(title_block)
+        header_layout.addStretch()
+        header_layout.addWidget(self.connection_status)
+        header_layout.addWidget(self.save_status)
+        self.layout.addWidget(header)
+
+        # Панель действий
+        toolbar = QFrame()
+        toolbar.setObjectName("toolbarCard")
+        self.buttons_layout = QHBoxLayout(toolbar)
+        self.buttons_layout.setContentsMargins(12, 10, 12, 10)
+        self.buttons_layout.setSpacing(8)
+
         self.new_month_btn = QPushButton("Новый месяц")
+        self.new_month_btn.setFixedHeight(36)
+        self.new_month_btn.setMinimumWidth(132)
+        set_variant(self.new_month_btn, "primary")
         self.new_month_btn.clicked.connect(self.select_month_and_year)
-        self.new_month_btn.setFixedHeight(35)
-        self.new_month_btn.setFixedWidth(120)
-        self.new_month_btn.setStyleSheet("""
-            QPushButton {
-                background: #06B6D4;
-                color: #FFFFFF;
-                border: none;
-                border-radius: 6px;
-                font-size: 14px;
-                font-weight: 400;
-            }
-            QPushButton:hover {
-                background: #0891B2;
-            }
-            QPushButton:pressed {
-                background-color: #0E7490;
-            }
-        """)
-        left_buttons_layout.addWidget(self.new_month_btn)
-        
-        # Кнопка Новый сотрудник
+        self.buttons_layout.addWidget(self.new_month_btn)
+
         self.add_employee_btn = QPushButton("Новый сотрудник")
+        self.add_employee_btn.setFixedHeight(36)
+        self.add_employee_btn.setMinimumWidth(146)
         self.add_employee_btn.clicked.connect(self.add_employee_dialog)
-        self.add_employee_btn.setFixedHeight(30)
-        self.add_employee_btn.setFixedWidth(140)
-        self.add_employee_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #808080;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-size: 14px;
-                font-weight: 400;
-            }
-            QPushButton:hover {
-                background-color: #696969;
-            }
-            QPushButton:pressed {
-                background-color: #505050;
-            }
-        """)
-        left_buttons_layout.addWidget(self.add_employee_btn)
-        
-        # Кнопка для добавления сотрудников в текущий период
+        self.buttons_layout.addWidget(self.add_employee_btn)
+
         self.add_to_period_btn = QPushButton("Добавить в месяц")
+        self.add_to_period_btn.setFixedHeight(36)
+        self.add_to_period_btn.setMinimumWidth(154)
         self.add_to_period_btn.clicked.connect(self.add_employees_to_period)
-        self.add_to_period_btn.setFixedHeight(30)
-        self.add_to_period_btn.setFixedWidth(140)
-        self.add_to_period_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #808080;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-size: 14px;
-                font-weight: 400;
-            }
-            QPushButton:hover {
-                background-color: #696969;
-            }
-            QPushButton:pressed {
-                background-color: #505050;
-            }
-        """)
-        left_buttons_layout.addWidget(self.add_to_period_btn)
-        
-        # Правая часть панели - кнопка Сохранить и другие
-        right_buttons_layout = QHBoxLayout()
-        right_buttons_layout.setSpacing(5)
-        
-        # Кнопка Открыть документ
+        self.buttons_layout.addWidget(self.add_to_period_btn)
+
         self.open_doc_btn = QPushButton("Открыть документ")
+        self.open_doc_btn.setFixedHeight(36)
+        self.open_doc_btn.setMinimumWidth(154)
+        set_variant(self.open_doc_btn, "ghost")
         self.open_doc_btn.clicked.connect(self.open_document)
-        self.open_doc_btn.setFixedHeight(30)
-        self.open_doc_btn.setFixedWidth(140)
-        self.open_doc_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #808080;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                font-size: 14px;
-                font-weight: 400;
-            }
-            QPushButton:hover {
-                background-color: #696969;
-            }
-            QPushButton:pressed {
-                background-color: #505050;
-            }
-        """)
-        right_buttons_layout.addWidget(self.open_doc_btn)
-        
-        # Кнопка Сохранить
-        self.save_btn = QPushButton("СОХРАНИТЬ")
-        self.save_btn.clicked.connect(self.save_data)
-        self.save_btn.setFixedHeight(35)
-        self.save_btn.setFixedWidth(120)
-        self.save_btn.setStyleSheet("""
-            QPushButton {
-                background: #28A745;
-                color: #FFFFFF;
-                border: none;
-                border-radius: 6px;
-                font-size: 14px;
-                font-weight: 400;
-            }
-            QPushButton:hover {
-                background-color: #218838;
-            }
-            QPushButton:pressed {
-                background-color: #1E7E34;
-            }
-        """)
-        right_buttons_layout.addWidget(self.save_btn)
-        
-        # Объединяем левую и правую части
-        self.buttons_layout.addLayout(left_buttons_layout)
+        self.buttons_layout.addWidget(self.open_doc_btn)
+
         self.buttons_layout.addStretch()
-        self.buttons_layout.addLayout(right_buttons_layout)
-        
-        self.layout.addLayout(self.buttons_layout)
+
+        self.save_btn = QPushButton("Сохранить")
+        self.save_btn.setFixedHeight(36)
+        self.save_btn.setMinimumWidth(132)
+        set_variant(self.save_btn, "success")
+        self.save_btn.clicked.connect(self.save_data)
+        self.buttons_layout.addWidget(self.save_btn)
+
+        self.layout.addWidget(toolbar)
         
         # Создаем сплиттер для вертикального расположения месяцев
         self.splitter = QSplitter(Qt.Vertical)
-        self.splitter.setHandleWidth(1)
+        self.splitter.setObjectName("mainSplitter")
+        self.splitter.setHandleWidth(8)
         self.layout.addWidget(self.splitter)
         
         # Создаем два виджета месяцев
@@ -3069,63 +2985,49 @@ class ScheduleApp(QMainWindow):
             sizes = [300, 300]
         self.splitter.setSizes(sizes if len(sizes) == 2 else [300, 300])
         
-        # Легенда статусов
-        self.legend_layout = QHBoxLayout()
-        self.legend_layout.setContentsMargins(0, 2, 0, 2)
+        # Легенда статусов и действия внизу
+        legend_card = QFrame()
+        legend_card.setObjectName("legendCard")
+        self.legend_layout = QHBoxLayout(legend_card)
+        self.legend_layout.setContentsMargins(14, 8, 14, 8)
         self.legend_layout.setSpacing(10)
-        
+
+        legend_caption = QLabel("СТАТУСЫ")
+        legend_caption.setObjectName("sectionCaption")
+        self.legend_layout.addWidget(legend_caption)
+        self.legend_layout.addSpacing(4)
+
         for status, (icon, text, color, _) in self.status_mapping.items():
             legend_item = QHBoxLayout()
-            legend_item.setSpacing(2)
+            legend_item.setSpacing(5)
             color_label = QLabel("")
-            color_label.setStyleSheet(f"font-size: 12px; background: {color.name()}; padding: 0px;")
-            color_label.setFixedSize(12, 12)
+            color_label.setFixedSize(10, 10)
+            color_label.setStyleSheet(
+                f"background: {color.name()}; border: 1px solid #CBD5E1; border-radius: 5px;"
+            )
             legend_item.addWidget(color_label)
-            
+
             text_label = QLabel(text)
-            text_label.setStyleSheet("padding: 0px; font-size: 12px;")
+            text_label.setObjectName("legendLabel")
             legend_item.addWidget(text_label)
             self.legend_layout.addLayout(legend_item)
-        
+
         self.legend_layout.addStretch()
-        
+
         # Метка для отображения времени последнего сохранения
         self.last_update_label = QLabel("Еще не сохранено")
-        self.last_update_label.setStyleSheet("""
-            QLabel {
-                color: #6c757d;
-                font-size: 11px;
-                padding: 2px 8px;
-                background-color: #f8f9fa;
-                border-radius: 4px;
-                border: 1px solid #dee2e6;
-            }
-        """)
+        self.last_update_label.setObjectName("mutedLabel")
         self.legend_layout.addWidget(self.last_update_label)
-        
+
         # Кнопка обновления в правом нижнем углу
         self.refresh_btn = QPushButton("Обновить")
-        self.refresh_btn.setFixedHeight(25)
-        self.refresh_btn.setFixedWidth(80)
-        self.refresh_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #6c757d;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #5a6268;
-            }
-            QPushButton:pressed {
-                background-color: #545b62;
-            }
-        """)
+        self.refresh_btn.setFixedHeight(32)
+        self.refresh_btn.setMinimumWidth(96)
+        set_variant(self.refresh_btn, "ghost")
         self.refresh_btn.clicked.connect(self.refresh_data)
         self.legend_layout.addWidget(self.refresh_btn)
-        
-        self.layout.addLayout(self.legend_layout)
+
+        self.layout.addWidget(legend_card)
 
         # Сразу показываем локальные данные; после подключения они обновятся.
         self.load_initial_data()
@@ -3143,14 +3045,14 @@ class ScheduleApp(QMainWindow):
         """Установка статуса несохраненных изменений"""
         self.unsaved_changes = has_changes
         if has_changes:
-            self.save_status.setText("● Не сохранено")
-            self.save_status.setStyleSheet("color: orange; font-weight: bold; padding: 2px;")
+            self.save_status.setText("Не сохранено")
+            set_pill_state(self.save_status, "unsaved")
             # Запускаем таймер автосохранения
             self.last_change_time = datetime.now()
             self.auto_save_timer.start(5 * 60 * 1000)  # 5 минут - 300000 мс
         else:
             self.save_status.setText("Сохранено")
-            self.save_status.setStyleSheet("color: green; font-weight: bold; padding: 2px;")
+            set_pill_state(self.save_status, "saved")
             self.auto_save_timer.stop()  # Останавливаем таймер, если изменения сохранены
     
     def init_shortcuts(self):
@@ -3174,14 +3076,14 @@ class ScheduleApp(QMainWindow):
 
         if self.network_manager.connect(self.server_host, self.server_port):
             self.connection_status.setText("Подключено")
-            self.connection_status.setStyleSheet("color: green; font-weight: bold; padding: 2px;")
+            set_pill_state(self.connection_status, "connected")
             self.statusBar().showMessage("Успешное подключение к серверу", 3000)
             self.reconnect_timer.stop()
             # Очередь уже отправлена; забираем актуальные данные сервера.
             self.refresh_data(silent=True)
         else:
             self.connection_status.setText("Не подключено")
-            self.connection_status.setStyleSheet("color: red; font-weight: bold; padding: 2px;")
+            set_pill_state(self.connection_status, "offline")
             self.statusBar().showMessage("Ошибка подключения к серверу", 3000)
             self.reconnect_timer.start()
             self.load_initial_data()
@@ -3190,15 +3092,11 @@ class ScheduleApp(QMainWindow):
         """Реакция на потерю/восстановление соединения."""
         if connected:
             self.connection_status.setText("Подключено")
-            self.connection_status.setStyleSheet(
-                "color: green; font-weight: bold; padding: 2px;"
-            )
+            set_pill_state(self.connection_status, "connected")
             self.reconnect_timer.stop()
         else:
             self.connection_status.setText("Не подключено")
-            self.connection_status.setStyleSheet(
-                "color: red; font-weight: bold; padding: 2px;"
-            )
+            set_pill_state(self.connection_status, "offline")
             self.reconnect_timer.start()
 
     def try_reconnect(self):
@@ -4280,10 +4178,7 @@ if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
-    font = app.font()
-    font.setFamily("Arial")
-    font.setPointSize(10)
-    app.setFont(font)
+    apply_theme(app)
     window = ScheduleApp()
     window.showMaximized()
     sys.exit(app.exec_())
