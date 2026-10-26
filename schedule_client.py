@@ -2245,7 +2245,7 @@ class MonthWidget(QWidget):
                         background-color: #FFF1F2;
                         color: #B91C1C;
                         font-weight: 600;
-                        padding: 6px 2px;
+                        padding: 2px 1px;
                         border-right: 1px solid #EEF2F7;
                         border-bottom: 1px solid #E2E8F0;
                     }}
@@ -2256,7 +2256,7 @@ class MonthWidget(QWidget):
                         background-color: #F8FAFC;
                         color: #475569;
                         font-weight: 600;
-                        padding: 6px 2px;
+                        padding: 2px 1px;
                         border-right: 1px solid #EEF2F7;
                         border-bottom: 1px solid #E2E8F0;
                     }}
