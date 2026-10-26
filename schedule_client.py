@@ -85,6 +85,20 @@ from ui_theme import apply_theme, set_pill_state, set_variant
 
 logger = logging.getLogger(__name__)
 
+
+def create_status_icon(color, size=12):
+    """Создаёт цветной квадрат статуса для пунктов контекстного меню."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QPen(QColor("#CBD5E1"), 1))
+    painter.setBrush(color)
+    painter.drawRoundedRect(1, 1, size - 2, size - 2, 2, 2)
+    painter.end()
+    return QIcon(pixmap)
+
+
 # Действия, которые изменяют данные и могут быть отложены до подключения.
 WRITE_ACTIONS = {
     "save_schedule",
@@ -1376,7 +1390,7 @@ class NoteDialog(QDialog):
 
 
 class ScheduleItemDelegate(QStyledItemDelegate):
-    """Сохраняет цвет статуса и рисует синюю рамку выбранной ячейки."""
+    """Сохраняет цвет статуса и закрашивает выбранные ячейки."""
 
     def paint(self, painter, option, index):
         opt = QStyleOptionViewItem(option)
@@ -1386,9 +1400,7 @@ class ScheduleItemDelegate(QStyledItemDelegate):
 
         if option.state & QStyle.State_Selected:
             painter.save()
-            painter.setPen(QPen(QColor("#2563EB"), 2))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRect(option.rect.adjusted(1, 1, -1, -1))
+            painter.fillRect(option.rect, QColor(37, 99, 235, 80))
             painter.restore()
 
 
@@ -2382,8 +2394,9 @@ class MonthWidget(QWidget):
                     menu.addAction(note_action)
                     menu.addSeparator()
         
-        for status, (icon, text, _, _) in self.parent_app.status_mapping.items():
-            action = QAction(f"■ {text}", self)
+        for status, (icon, text, color, _) in self.parent_app.status_mapping.items():
+            action = QAction(text, self)
+            action.setIcon(create_status_icon(color))
             action.triggered.connect(lambda _, s=status: self.update_selected_status(s))
             menu.addAction(action)
         
