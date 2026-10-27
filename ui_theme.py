@@ -239,6 +239,7 @@ QLineEdit, QComboBox, QTimeEdit, QSpinBox, QDateEdit {
     padding: 0 8px;
     min-height: 30px;
     selection-background-color: #DBEAFE;
+    selection-color: #000000;
 }
 QLineEdit:focus, QComboBox:focus, QTimeEdit:focus, QSpinBox:focus, QDateEdit:focus {
     border: 1px solid #2563EB;
@@ -275,14 +276,14 @@ QTableWidget#scheduleTable {
     gridline-color: #EEF2F7;
     alternate-background-color: #FAFBFD;
     selection-background-color: transparent;
-    selection-color: #0F172A;
+    selection-color: #000000;
 }
 QTableWidget#scheduleTable::item {
     padding: 0 2px;
 }
 QTableWidget#scheduleTable::item:selected {
     background: transparent;
-    border: 2px solid #2563EB;
+    border: none;
 }
 QHeaderView::section {
     background: #F8FAFC;
@@ -449,7 +450,8 @@ QRadioButton::indicator {
     border-radius: 8px;
 }
 QRadioButton::indicator:checked {
-    border: 5px solid #2563EB;
+    border: 1px solid #2563EB;
+    background: #2563EB;
 }
 QCheckBox::indicator {
     border-radius: 4px;
