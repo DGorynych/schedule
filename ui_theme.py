@@ -271,14 +271,16 @@ QComboBox QAbstractItemView {
 }
 QTableWidget#scheduleTable {
     background: #FFFFFF;
-    border: 1px solid #E2E8F0;
+    color: #0F172A;
+    border: 1px solid #7C8B9E;
     border-radius: 10px;
-    gridline-color: #EEF2F7;
+    gridline-color: #7C8B9E;
     alternate-background-color: #FAFBFD;
     selection-background-color: transparent;
     selection-color: #000000;
 }
 QTableWidget#scheduleTable::item {
+    color: #0F172A;
     padding: 0 2px;
 }
 QTableWidget#scheduleTable::item:selected {
@@ -287,22 +289,22 @@ QTableWidget#scheduleTable::item:selected {
 }
 QHeaderView::section {
     background: #F8FAFC;
-    color: #475569;
+    color: #1E293B;
     padding: 2px 1px;
     border: none;
-    border-right: 1px solid #EEF2F7;
-    border-bottom: 1px solid #E2E8F0;
-    font-weight: 600;
+    border-right: 1px solid #7C8B9E;
+    border-bottom: 1px solid #7C8B9E;
 }
 QHeaderView::section:vertical {
+    color: #0F172A;
     padding: 0 8px;
     text-align: left;
 }
 QTableCornerButton::section {
     background: #F8FAFC;
     border: none;
-    border-right: 1px solid #EEF2F7;
-    border-bottom: 1px solid #E2E8F0;
+    border-right: 1px solid #7C8B9E;
+    border-bottom: 1px solid #7C8B9E;
 }
 QMenuBar {
     background: #FFFFFF;

@@ -1859,6 +1859,7 @@ class MonthWidget(QWidget):
         self.db = db
         self.current_period = None
         self.sunday_columns = []  # Список индексов колонок воскресений
+        self._header_font_size = 8.5
         self.copied_data = None  # Для хранения скопированных данных
         self.initUI()
     
@@ -1950,8 +1951,9 @@ class MonthWidget(QWidget):
 
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        table.horizontalHeader().setMinimumSectionSize(24)
+        table.horizontalHeader().setMinimumSectionSize(22)
         table.verticalHeader().setMinimumSectionSize(24)
+        table.horizontalHeader().setFixedHeight(64)
         table.horizontalHeader().setHighlightSections(False)
         table.verticalHeader().setHighlightSections(False)
         table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
@@ -2226,7 +2228,7 @@ class MonthWidget(QWidget):
         if table.columnCount() != days + 4:
             return
 
-        day_width = getattr(self, "_day_width", 32)
+        day_width = getattr(self, "_day_width", 30)
         result_width = getattr(self, "_result_width", 58)
         for col in range(days):
             table.setColumnWidth(col, day_width)
@@ -2242,38 +2244,31 @@ class MonthWidget(QWidget):
                     table.setColumnWidth(col, day_width + per_day)
 
     def update_header_style(self):
-        """Обновляет стиль заголовков таблицы"""
-        if not self.sunday_columns:
-            # Если нет воскресных колонок, сбрасываем стиль
-            self.table.horizontalHeader().setStyleSheet("")
-            return
-        
-        # Создаем CSS стиль для воскресных заголовков
+        """Обновляет стиль заголовков таблицы."""
+        total_start = max(0, self.table.columnCount() - 4)
+        header_font_size = getattr(self, "_header_font_size", 8.5)
         style_sheet = ""
         for col in range(self.table.columnCount()):
-            if col in self.sunday_columns:
-                style_sheet += f"""
-                    QHeaderView::section:nth-child({col + 1}) {{
-                        background-color: #FFF1F2;
-                        color: #B91C1C;
-                        font-weight: 600;
-                        padding: 2px 1px;
-                        border-right: 1px solid #EEF2F7;
-                        border-bottom: 1px solid #E2E8F0;
-                    }}
-                """
+            if col >= total_start:
+                background = "#CBD5E1"
+                color = "#0F172A"
+            elif col in self.sunday_columns:
+                background = "#FFF1F2"
+                color = "#991B1B"
             else:
-                style_sheet += f"""
-                    QHeaderView::section:nth-child({col + 1}) {{
-                        background-color: #F8FAFC;
-                        color: #475569;
-                        font-weight: 600;
-                        padding: 2px 1px;
-                        border-right: 1px solid #EEF2F7;
-                        border-bottom: 1px solid #E2E8F0;
-                    }}
-                """
-        
+                background = "#F8FAFC"
+                color = "#1E293B"
+            style_sheet += f"""
+                QHeaderView::section:nth-child({col + 1}) {{
+                    background-color: {background};
+                    color: {color};
+                    padding: 1px 0;
+                    font-size: {header_font_size:.1f}pt;
+                    border-right: 1px solid #7C8B9E;
+                    border-bottom: 1px solid #7C8B9E;
+                }}
+            """
+
         # Применяем стиль к заголовку таблицы
         self.table.horizontalHeader().setStyleSheet(style_sheet)
     
@@ -2337,17 +2332,18 @@ class MonthWidget(QWidget):
                     cell.setFont(cell_font)
                     self.table.setItem(row, column, cell)
                 cell.setText(text)
-                cell.setBackground(QColor("#F8FAFC"))
-                cell.setForeground(QColor("#334155"))
+                cell.setBackground(QColor("#E2E8F0"))
+                cell.setForeground(QColor("#0F172A"))
 
         parsed = parse_period(self.current_period)
         year, month = (parsed[0], parsed[1]) if parsed else (2000, 1)
+        month_name = MONTH_NAMES.get(month, "")[:3].capitalize()
         headers = []
         for col in range(days):
             weekday = datetime(year, month, col + 1).weekday()
             day_name = DAY_NAMES[weekday]
             count = 0 if sundays[col] else working_counts[col]
-            headers.append(f"{col + 1}{day_name}\n({count})")
+            headers.append(f"{col + 1}\n{month_name}\n{day_name}\n({count})")
         headers += ["Смены", "Рег", "КЦ", "Часы"]
         self.table.setHorizontalHeaderLabels(headers)
         self.update_header_style()
@@ -2581,15 +2577,19 @@ class MonthWidget(QWidget):
         base_row_height = 28
         base_font_size = 9.0
         base_header_font_size = 8.5
-        base_day_width = 32
+        base_header_height = 64
+        base_day_width = 30
         base_result_width = 58
         
         # Рассчитываем новые значения
         scale_factor = scale_percent / 100.0
         
-        # Устанавливаем высоту строк
+        # Устанавливаем высоту строк и заголовка
         new_row_height = int(base_row_height * scale_factor)
         self.table.verticalHeader().setDefaultSectionSize(new_row_height)
+        self.table.horizontalHeader().setFixedHeight(
+            max(52, int(base_header_height * scale_factor))
+        )
         
         # Устанавливаем ширину столбцов дней
         days_count = self.table.columnCount() - 4
@@ -2616,8 +2616,10 @@ class MonthWidget(QWidget):
         self.table.setFont(font)
         
         # Обновляем шрифты заголовков
+        self._header_font_size = base_header_font_size * scale_factor
         header_font = self.table.horizontalHeader().font()
-        header_font.setPointSizeF(base_header_font_size * scale_factor)
+        header_font.setBold(True)
+        header_font.setPointSizeF(self._header_font_size)
         self.table.horizontalHeader().setFont(header_font)
         self.table.verticalHeader().setFont(header_font)
         
