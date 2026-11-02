@@ -38,6 +38,7 @@ from PyQt5.QtWidgets import (
     QRadioButton,
     QScrollArea,
     QShortcut,
+    QSpinBox,
     QSplitter,
     QStyle,
     QStyledItemDelegate,
@@ -1182,6 +1183,45 @@ class ConnectionDialog(QDialog):
         super().accept()
 
 
+class TableFormatDialog(QDialog):
+    """Базовые настройки форматирования таблиц."""
+
+    def __init__(self, row_height=24, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Форматирование таблиц")
+        self.setModal(True)
+        self.setMinimumWidth(360)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+        self.setLayout(layout)
+
+        form_layout = QFormLayout()
+        form_layout.setSpacing(10)
+
+        self.row_height_spin = QSpinBox()
+        self.row_height_spin.setRange(18, 48)
+        self.row_height_spin.setSingleStep(1)
+        self.row_height_spin.setSuffix(" px")
+        self.row_height_spin.setValue(int(row_height))
+        form_layout.addRow("Высота строк таблицы:", self.row_height_spin)
+
+        layout.addLayout(form_layout)
+
+        hint = QLabel("Применяется к обеим таблицам месяцев.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def get_row_height(self):
+        return self.row_height_spin.value()
+
+
 class MonthSelectionDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent) 
@@ -1967,7 +2007,9 @@ class MonthWidget(QWidget):
             lambda *_: setattr(self.parent_app, "last_active_widget", self)
         )
 
-        table.verticalHeader().setDefaultSectionSize(24)
+        table.verticalHeader().setDefaultSectionSize(
+            getattr(self.parent_app, "table_row_height", 24)
+        )
 
         font = table.horizontalHeader().font()
         font.setBold(True)
@@ -2614,7 +2656,7 @@ class MonthWidget(QWidget):
             return
         
         # Базовые значения (при масштабе 100%)
-        base_row_height = 24
+        base_row_height = getattr(self.parent_app, "table_row_height", 24)
         base_font_size = 10.5
         base_header_font_size = 8.5
         base_header_height = 50
@@ -2865,7 +2907,14 @@ class ScheduleApp(QMainWindow):
         self.last_active_widget = None
         
         # Добавляем переменную для текущего масштаба
-        self.current_scale = self.settings.value("scale", 100, type=int)
+        self.current_scale = 100
+
+        # Базовая высота строк таблиц (настройка форматирования).
+        try:
+            table_row_height = int(self.settings.value("table_row_height", 24))
+        except (TypeError, ValueError):
+            table_row_height = 24
+        self.table_row_height = max(18, min(48, table_row_height))
         
         # Загружаем последние открытые месяцы
         self.last_opened_periods = self.settings.value("last_opened_periods", [], type=list)
@@ -2937,9 +2986,12 @@ class ScheduleApp(QMainWindow):
 
         # Меню "Настройки"
         settings_menu = self.app_menu.addMenu('Настройки')
-        connection_action = QAction('Настройки подключения', self)
+        connection_action = QAction('Подключение к серверу', self)
         connection_action.triggered.connect(self.show_connection_dialog)
         settings_menu.addAction(connection_action)
+        formatting_action = QAction('Форматирование таблиц', self)
+        formatting_action.triggered.connect(self.show_table_format_dialog)
+        settings_menu.addAction(formatting_action)
         export_action = QAction('Экспорт', self)
         export_action.triggered.connect(self.show_export_settings_dialog)
         settings_menu.addAction(export_action)
@@ -2959,21 +3011,6 @@ class ScheduleApp(QMainWindow):
         add_employee_action.triggered.connect(self.add_employee_dialog)
         employees_menu.addAction(add_employee_action)
 
-        # Меню "Масштаб"
-        scale_menu = self.app_menu.addMenu('Масштаб')
-        self.scale_actions = []
-
-        # Создаем варианты масштаба от 10% до 100% с шагом 10%
-        for scale_value in range(10, 101, 10):
-            scale_action = QAction(f'{scale_value}%', self)
-            scale_action.triggered.connect(lambda checked, sv=scale_value: self.set_scale_by_menu(sv))
-            scale_menu.addAction(scale_action)
-            self.scale_actions.append(scale_action)
-
-            # Отмечаем текущий масштаб
-            if scale_value == self.current_scale:
-                scale_action.setChecked(True)
-        
         # Статусы соединения и сохранения — компактные плашки в шапке.
         self.connection_status = QLabel("Не подключено")
         self.connection_status.setObjectName("statusPill")
@@ -3244,7 +3281,19 @@ class ScheduleApp(QMainWindow):
             self.settings.setValue("server_port", self.server_port)
             
             self.connect_to_server()
-    
+
+    def show_table_format_dialog(self):
+        """Диалог базового форматирования таблиц (высота строк)."""
+        dialog = TableFormatDialog(self.table_row_height, self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        self.table_row_height = dialog.get_row_height()
+        self.settings.setValue("table_row_height", self.table_row_height)
+        self.apply_scale(self.current_scale)
+        self.statusBar().showMessage(
+            f"Высота строк таблицы: {self.table_row_height} px", 2000
+        )
+
     def load_initial_data(self):
         """Загружает периоды и восстанавливает последние открытые месяцы."""
         self.month_widget1.load_periods()
@@ -4232,17 +4281,6 @@ class ScheduleApp(QMainWindow):
                     self.last_update_label.setText(f"Сохранено {hours_diff} ч. {minutes_diff} мин. назад")
                 else:
                     self.last_update_label.setText(f"Сохранено {minutes_diff} мин. назад")
-    
-    def set_scale_by_menu(self, scale_percent):
-        """Изменение масштаба через меню"""
-        self.current_scale = scale_percent
-        self.apply_scale(scale_percent)
-        
-        # Сохраняем настройки масштаба
-        self.settings.setValue("scale", scale_percent)
-        
-        # Показываем сообщение
-        self.statusBar().showMessage(f"Масштаб изменен на {scale_percent}%", 2000)
     
     def apply_scale(self, scale_percent):
         """Применение масштаба к обеим таблицам"""
