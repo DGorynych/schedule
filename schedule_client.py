@@ -1953,7 +1953,7 @@ class MonthWidget(QWidget):
         table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
         table.horizontalHeader().setMinimumSectionSize(22)
         table.verticalHeader().setMinimumSectionSize(24)
-        table.horizontalHeader().setFixedHeight(64)
+        table.horizontalHeader().setFixedHeight(54)
         table.horizontalHeader().setHighlightSections(False)
         table.verticalHeader().setHighlightSections(False)
         table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
@@ -2337,13 +2337,12 @@ class MonthWidget(QWidget):
 
         parsed = parse_period(self.current_period)
         year, month = (parsed[0], parsed[1]) if parsed else (2000, 1)
-        month_name = MONTH_NAMES.get(month, "")[:3].capitalize()
         headers = []
         for col in range(days):
             weekday = datetime(year, month, col + 1).weekday()
             day_name = DAY_NAMES[weekday]
             count = 0 if sundays[col] else working_counts[col]
-            headers.append(f"{col + 1}\n{month_name}\n{day_name}\n({count})")
+            headers.append(f"{col + 1}\n{day_name}\n({count})")
         headers += ["Смены", "Рег", "КЦ", "Часы"]
         self.table.setHorizontalHeaderLabels(headers)
         self.update_header_style()
@@ -2577,7 +2576,7 @@ class MonthWidget(QWidget):
         base_row_height = 28
         base_font_size = 9.0
         base_header_font_size = 8.5
-        base_header_height = 64
+        base_header_height = 54
         base_day_width = 30
         base_result_width = 58
         
@@ -2588,7 +2587,7 @@ class MonthWidget(QWidget):
         new_row_height = int(base_row_height * scale_factor)
         self.table.verticalHeader().setDefaultSectionSize(new_row_height)
         self.table.horizontalHeader().setFixedHeight(
-            max(52, int(base_header_height * scale_factor))
+            max(44, int(base_header_height * scale_factor))
         )
         
         # Устанавливаем ширину столбцов дней
@@ -2994,11 +2993,11 @@ class ScheduleApp(QMainWindow):
         self.open_doc_btn = QPushButton("Открыть документ")
         self.open_doc_btn.setFixedHeight(30)
         self.open_doc_btn.setMinimumWidth(140)
-        set_variant(self.open_doc_btn, "ghost")
+        self.open_doc_btn.setEnabled(True)
         self.open_doc_btn.clicked.connect(self.open_document)
-        self.buttons_layout.addWidget(self.open_doc_btn)
 
         self.buttons_layout.addStretch()
+        self.buttons_layout.addWidget(self.open_doc_btn)
 
         self.save_btn = QPushButton("Сохранить")
         self.save_btn.setFixedHeight(30)
@@ -3589,17 +3588,29 @@ class ScheduleApp(QMainWindow):
                 self.statusBar().showMessage("Сотрудник с таким именем уже существует", 3000)
     
     def open_document(self):
-        """Открывает сохраненную таблицу Excel"""
+        """Открывает экспортированный Excel, создавая его при необходимости."""
         if not self.export_folder:
-            self.statusBar().showMessage("Сначала выберите папку для экспорта", 3000)
-            return
-        
+            self.select_export_folder()
+            if not self.export_folder:
+                QMessageBox.information(
+                    self, "Открыть документ", "Папка для экспорта не выбрана."
+                )
+                return
+
         file_path = os.path.join(self.export_folder, "Расписание_все_месяцы.xlsx")
-        
+
+        # Если файла ещё нет, формируем его из текущих данных.
         if not os.path.exists(file_path):
-            self.statusBar().showMessage(f"Файл не найден: {file_path}", 3000)
+            self.export_to_excel()
+
+        if not os.path.exists(file_path):
+            QMessageBox.warning(
+                self,
+                "Открыть документ",
+                f"Не удалось найти или создать файл:\n{file_path}",
+            )
             return
-        
+
         try:
             if sys.platform == "win32":
                 os.startfile(file_path)
@@ -3607,11 +3618,15 @@ class ScheduleApp(QMainWindow):
                 os.system(f'open "{file_path}"')
             else:
                 os.system(f'xdg-open "{file_path}"')
-            
+
             self.statusBar().showMessage(f"Открыт файл: {file_path}", 3000)
-            
+
         except Exception as e:
-            self.statusBar().showMessage(f"Не удалось открыть файл: {str(e)}", 3000)
+            QMessageBox.warning(
+                self,
+                "Открыть документ",
+                f"Не удалось открыть файл:\n{file_path}\n\n{e}",
+            )
         
     def show_export_settings_dialog(self):
         """Показать окно настроек экспорта."""
