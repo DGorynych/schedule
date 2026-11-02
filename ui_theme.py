@@ -253,7 +253,7 @@ QComboBox::drop-down {
     width: 22px;
 }
 QComboBox#periodCombo {
-    min-height: 26px;
+    min-height: 24px;
     padding: 0 6px;
     font-size: 9pt;
 }

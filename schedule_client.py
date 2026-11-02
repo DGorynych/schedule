@@ -1900,8 +1900,8 @@ class MonthWidget(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(6, 3, 6, 4)
-        layout.setSpacing(3)
+        layout.setContentsMargins(4, 1, 4, 2)
+        layout.setSpacing(2)
         self.setLayout(layout)
 
         # Верхняя панель карточки месяца: выбор периода и компактное меню.
@@ -1912,7 +1912,7 @@ class MonthWidget(QWidget):
         self.period_combo = QComboBox()
         self.period_combo.setObjectName("periodCombo")
         self.period_combo.setMinimumWidth(180)
-        self.period_combo.setFixedHeight(28)
+        self.period_combo.setFixedHeight(24)
         self.period_combo.currentIndexChanged.connect(self.period_changed)
         top_layout.addWidget(self.period_combo)
         top_layout.addStretch()
@@ -1931,7 +1931,7 @@ class MonthWidget(QWidget):
         self.month_menu_button.setObjectName("cardMenuButton")
         self.month_menu_button.setText("⋯")
         self.month_menu_button.setToolTip("Действия с месяцем")
-        self.month_menu_button.setFixedSize(26, 26)
+        self.month_menu_button.setFixedSize(24, 24)
         self.month_menu_button.setPopupMode(QToolButton.InstantPopup)
         self.month_menu_button.setMenu(self.month_menu)
         top_layout.addWidget(self.month_menu_button)
@@ -1953,7 +1953,7 @@ class MonthWidget(QWidget):
         table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
         table.horizontalHeader().setMinimumSectionSize(22)
         table.verticalHeader().setMinimumSectionSize(24)
-        table.horizontalHeader().setFixedHeight(54)
+        table.horizontalHeader().setFixedHeight(50)
         table.horizontalHeader().setHighlightSections(False)
         table.verticalHeader().setHighlightSections(False)
         table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
@@ -1967,7 +1967,7 @@ class MonthWidget(QWidget):
             lambda *_: setattr(self.parent_app, "last_active_widget", self)
         )
 
-        table.verticalHeader().setDefaultSectionSize(28)
+        table.verticalHeader().setDefaultSectionSize(24)
 
         font = table.horizontalHeader().font()
         font.setBold(True)
@@ -2592,10 +2592,10 @@ class MonthWidget(QWidget):
             return
         
         # Базовые значения (при масштабе 100%)
-        base_row_height = 28
+        base_row_height = 24
         base_font_size = 9.0
         base_header_font_size = 8.5
-        base_header_height = 54
+        base_header_height = 50
         base_day_width = 30
         base_result_width = 58
         
@@ -2903,8 +2903,8 @@ class ScheduleApp(QMainWindow):
         self.central_widget.setObjectName("appRoot")
         self.setCentralWidget(self.central_widget)
         self.layout = QVBoxLayout()
-        self.layout.setContentsMargins(6, 6, 6, 6)
-        self.layout.setSpacing(4)
+        self.layout.setContentsMargins(4, 4, 4, 4)
+        self.layout.setSpacing(3)
         self.central_widget.setLayout(self.layout)
         self.setMinimumSize(1100, 720)
 
@@ -2988,7 +2988,7 @@ class ScheduleApp(QMainWindow):
         toolbar = QFrame()
         toolbar.setObjectName("toolbarCard")
         self.buttons_layout = QHBoxLayout(toolbar)
-        self.buttons_layout.setContentsMargins(3, 3, 3, 4)
+        self.buttons_layout.setContentsMargins(3, 1, 3, 2)
         self.buttons_layout.setSpacing(6)
 
         self.new_month_btn = QPushButton("Новый месяц")
