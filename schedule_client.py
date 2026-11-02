@@ -2271,7 +2271,28 @@ class MonthWidget(QWidget):
 
         # Применяем стиль к заголовку таблицы
         self.table.horizontalHeader().setStyleSheet(style_sheet)
-    
+
+    def _total_cell_font(self, scale_percent=None):
+        """Крупный жирный шрифт для итоговых столбцов."""
+        if scale_percent is None:
+            scale_percent = getattr(self.parent_app, "current_scale", 100)
+        scale_factor = max(scale_percent, 1) / 100.0
+        font = QFont(self.table.font())
+        font.setBold(True)
+        font.setWeight(QFont.Black)
+        font.setPointSizeF(max(8.0, 10.5 * scale_factor))
+        return font
+
+    def _apply_total_cell_fonts(self, scale_percent=None):
+        """Применяет шрифт итогов ко всем ячейкам четырёх правых столбцов."""
+        total_font = self._total_cell_font(scale_percent)
+        first_total = max(0, self.table.columnCount() - 4)
+        for row in range(self.table.rowCount()):
+            for column in range(first_total, self.table.columnCount()):
+                item = self.table.item(row, column)
+                if item:
+                    item.setFont(total_font)
+
     def update_counters(self):
         if not self.current_period or self.table.is_loading:
             return
@@ -2313,12 +2334,12 @@ class MonthWidget(QWidget):
                     total_hours += item.note_data.get("worked_hours") or 0
 
             totals = [
-                (days, f"{total_shifts}", 9),
-                (days + 1, f"{registry_days}", 9),
-                (days + 2, f"{call_center_days}", 9),
-                (days + 3, f"{total_hours:.1f}".replace(".", ","), 8),
+                (days, f"{total_shifts}"),
+                (days + 1, f"{registry_days}"),
+                (days + 2, f"{call_center_days}"),
+                (days + 3, f"{total_hours:.1f}".replace(".", ",")),
             ]
-            for column, text, font_size in totals:
+            for column, text in totals:
                 if column >= self.table.columnCount():
                     continue
                 cell = self.table.item(row, column)
@@ -2326,14 +2347,12 @@ class MonthWidget(QWidget):
                     cell = QTableWidgetItem()
                     cell.setTextAlignment(Qt.AlignCenter)
                     cell.setFlags(cell.flags() ^ Qt.ItemIsEditable)
-                    cell_font = QFont(self.table.font())
-                    cell_font.setBold(True)
-                    cell_font.setPointSizeF(max(8.0, float(font_size)))
-                    cell.setFont(cell_font)
                     self.table.setItem(row, column, cell)
                 cell.setText(text)
                 cell.setBackground(QColor("#E2E8F0"))
                 cell.setForeground(QColor("#0F172A"))
+
+        self._apply_total_cell_fonts()
 
         parsed = parse_period(self.current_period)
         year, month = (parsed[0], parsed[1]) if parsed else (2000, 1)
@@ -2613,6 +2632,7 @@ class MonthWidget(QWidget):
         font = self.table.font()
         font.setPointSizeF(base_font_size * scale_factor)
         self.table.setFont(font)
+        self._apply_total_cell_fonts(scale_percent)
         
         # Обновляем шрифты заголовков
         self._header_font_size = base_header_font_size * scale_factor
