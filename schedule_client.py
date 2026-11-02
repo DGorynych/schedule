@@ -2137,6 +2137,7 @@ class MonthWidget(QWidget):
         item.setTextAlignment(Qt.AlignCenter)
         item.setBackground(background)
         item.setForeground(Qt.black)
+        item.setFont(self._cell_font())
         if item.has_note:
             item.setText(
                 format_note_text(
@@ -2272,6 +2273,27 @@ class MonthWidget(QWidget):
         # Применяем стиль к заголовку таблицы
         self.table.horizontalHeader().setStyleSheet(style_sheet)
 
+    def _cell_font(self, scale_percent=None):
+        """Чуть крупнее и жирнее обычные символы в ячейках."""
+        if scale_percent is None:
+            scale_percent = getattr(self.parent_app, "current_scale", 100)
+        scale_factor = max(scale_percent, 1) / 100.0
+        font = QFont(self.table.font())
+        font.setBold(True)
+        font.setWeight(QFont.DemiBold)
+        font.setPointSizeF(max(8.0, 10.5 * scale_factor))
+        return font
+
+    def _apply_cell_fonts(self, scale_percent=None):
+        """Применяет шрифт ко всем ячейкам дней."""
+        cell_font = self._cell_font(scale_percent)
+        first_total = max(0, self.table.columnCount() - 4)
+        for row in range(self.table.rowCount()):
+            for column in range(first_total):
+                item = self.table.item(row, column)
+                if item:
+                    item.setFont(cell_font)
+
     def _total_cell_font(self, scale_percent=None):
         """Крупный жирный шрифт для итоговых столбцов."""
         if scale_percent is None:
@@ -2280,7 +2302,7 @@ class MonthWidget(QWidget):
         font = QFont(self.table.font())
         font.setBold(True)
         font.setWeight(QFont.Black)
-        font.setPointSizeF(max(8.0, 10.5 * scale_factor))
+        font.setPointSizeF(max(8.0, 11.5 * scale_factor))
         return font
 
     def _apply_total_cell_fonts(self, scale_percent=None):
@@ -2593,7 +2615,7 @@ class MonthWidget(QWidget):
         
         # Базовые значения (при масштабе 100%)
         base_row_height = 24
-        base_font_size = 9.0
+        base_font_size = 10.5
         base_header_font_size = 8.5
         base_header_height = 50
         base_day_width = 30
@@ -2630,8 +2652,10 @@ class MonthWidget(QWidget):
         
         # Обновляем шрифты
         font = self.table.font()
+        font.setWeight(QFont.DemiBold)
         font.setPointSizeF(base_font_size * scale_factor)
         self.table.setFont(font)
+        self._apply_cell_fonts(scale_percent)
         self._apply_total_cell_fonts(scale_percent)
         
         # Обновляем шрифты заголовков
