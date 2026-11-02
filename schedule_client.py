@@ -86,6 +86,11 @@ from ui_theme import apply_theme, set_pill_state, set_variant
 
 logger = logging.getLogger(__name__)
 
+# Высота строк таблиц: минимальная читаемая, по умолчанию и максимальная (px).
+MIN_TABLE_ROW_HEIGHT = 16
+DEFAULT_TABLE_ROW_HEIGHT = 18
+MAX_TABLE_ROW_HEIGHT = 48
+
 
 def create_status_icon(color, size=12):
     """Создаёт цветной квадрат статуса для пунктов контекстного меню."""
@@ -1186,7 +1191,7 @@ class ConnectionDialog(QDialog):
 class TableFormatDialog(QDialog):
     """Базовые настройки форматирования таблиц."""
 
-    def __init__(self, row_height=24, parent=None):
+    def __init__(self, row_height=DEFAULT_TABLE_ROW_HEIGHT, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Форматирование таблиц")
         self.setModal(True)
@@ -1201,7 +1206,7 @@ class TableFormatDialog(QDialog):
         form_layout.setSpacing(10)
 
         self.row_height_spin = QSpinBox()
-        self.row_height_spin.setRange(18, 48)
+        self.row_height_spin.setRange(MIN_TABLE_ROW_HEIGHT, MAX_TABLE_ROW_HEIGHT)
         self.row_height_spin.setSingleStep(1)
         self.row_height_spin.setSuffix(" px")
         self.row_height_spin.setValue(int(row_height))
@@ -1992,7 +1997,7 @@ class MonthWidget(QWidget):
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
         table.horizontalHeader().setMinimumSectionSize(22)
-        table.verticalHeader().setMinimumSectionSize(24)
+        table.verticalHeader().setMinimumSectionSize(MIN_TABLE_ROW_HEIGHT)
         table.horizontalHeader().setFixedHeight(50)
         table.horizontalHeader().setHighlightSections(False)
         table.verticalHeader().setHighlightSections(False)
@@ -2008,7 +2013,7 @@ class MonthWidget(QWidget):
         )
 
         table.verticalHeader().setDefaultSectionSize(
-            getattr(self.parent_app, "table_row_height", 24)
+            getattr(self.parent_app, "table_row_height", DEFAULT_TABLE_ROW_HEIGHT)
         )
 
         font = table.horizontalHeader().font()
@@ -2656,7 +2661,9 @@ class MonthWidget(QWidget):
             return
         
         # Базовые значения (при масштабе 100%)
-        base_row_height = getattr(self.parent_app, "table_row_height", 24)
+        base_row_height = getattr(
+            self.parent_app, "table_row_height", DEFAULT_TABLE_ROW_HEIGHT
+        )
         base_font_size = 10.5
         base_header_font_size = 8.5
         base_header_height = 50
@@ -2910,11 +2917,23 @@ class ScheduleApp(QMainWindow):
         self.current_scale = 100
 
         # Базовая высота строк таблиц (настройка форматирования).
-        try:
-            table_row_height = int(self.settings.value("table_row_height", 24))
-        except (TypeError, ValueError):
-            table_row_height = 24
-        self.table_row_height = max(18, min(48, table_row_height))
+        # Настройка появилась недавно: при первом запуске новой версии
+        # однократно применяем компактную высоту, затем храним выбор пользователя.
+        format_version = self.settings.value("table_format_version", 0, type=int)
+        if format_version < 1:
+            table_row_height = DEFAULT_TABLE_ROW_HEIGHT
+            self.settings.setValue("table_format_version", 1)
+        else:
+            try:
+                table_row_height = int(
+                    self.settings.value("table_row_height", DEFAULT_TABLE_ROW_HEIGHT)
+                )
+            except (TypeError, ValueError):
+                table_row_height = DEFAULT_TABLE_ROW_HEIGHT
+        self.table_row_height = max(
+            MIN_TABLE_ROW_HEIGHT, min(MAX_TABLE_ROW_HEIGHT, table_row_height)
+        )
+        self.settings.setValue("table_row_height", self.table_row_height)
         
         # Загружаем последние открытые месяцы
         self.last_opened_periods = self.settings.value("last_opened_periods", [], type=list)
