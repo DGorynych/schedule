@@ -2383,7 +2383,15 @@ class MonthWidget(QWidget):
         """Обновляет стиль заголовков таблицы."""
         total_start = max(0, self.table.columnCount() - 4)
         header_font_size = getattr(self, "_header_font_size", 8.5)
-        style_sheet = ""
+        # Размер шрифта задаём общим правилом: в nth-child он применяется
+        # ненадёжно и приводил к обрезке текста при малом масштабе.
+        style_sheet = f"""
+            QHeaderView::section {{
+                padding: 1px 0;
+                font-size: {header_font_size:.2f}pt;
+                font-weight: 700;
+            }}
+        """
         for col in range(self.table.columnCount()):
             if col >= total_start:
                 background = "#CBD5E1"
@@ -2398,8 +2406,6 @@ class MonthWidget(QWidget):
                 QHeaderView::section:nth-child({col + 1}) {{
                     background-color: {background};
                     color: {color};
-                    padding: 1px 0;
-                    font-size: {header_font_size:.1f}pt;
                     border-right: 1px solid #7C8B9E;
                     border-bottom: 1px solid #7C8B9E;
                 }}
@@ -2759,12 +2765,18 @@ class MonthWidget(QWidget):
         # Рассчитываем новые значения
         scale_factor = scale_percent / 100.0
         self._scale_percent = scale_percent
+        self._header_font_size = base_header_font_size * scale_factor
 
-        # Устанавливаем высоту строк и заголовка
+        # Высота строк и заголовка. Заголовок даты состоит из трёх строк,
+        # поэтому его высота не может быть меньше трёх строк шрифта.
         new_row_height = max(8, int(base_row_height * scale_factor))
         self.table.verticalHeader().setDefaultSectionSize(new_row_height)
+        header_font = QFont(self.table.horizontalHeader().font())
+        header_font.setBold(True)
+        header_font.setPointSizeF(self._header_font_size)
+        min_header_height = QFontMetrics(header_font).lineSpacing() * 3 + 8
         self.table.horizontalHeader().setFixedHeight(
-            max(20, int(base_header_height * scale_factor))
+            max(int(base_header_height * scale_factor), min_header_height)
         )
 
         # Ширина столбца с ФИО масштабируется вместе с таблицей.
@@ -2781,10 +2793,6 @@ class MonthWidget(QWidget):
         self._apply_total_cell_fonts(scale_percent)
 
         # Шрифт заголовков дат
-        self._header_font_size = base_header_font_size * scale_factor
-        header_font = self.table.horizontalHeader().font()
-        header_font.setBold(True)
-        header_font.setPointSizeF(self._header_font_size)
         self.table.horizontalHeader().setFont(header_font)
 
         # ФИО сотрудников — крупнее и жирнее обычного текста.
