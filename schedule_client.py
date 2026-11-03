@@ -2406,8 +2406,8 @@ class MonthWidget(QWidget):
                 QHeaderView::section:nth-child({col + 1}) {{
                     background-color: {background};
                     color: {color};
-                    border-right: 1px solid #7C8B9E;
-                    border-bottom: 1px solid #7C8B9E;
+                    border-right: 1px solid #475569;
+                    border-bottom: 1px solid #475569;
                 }}
             """
 

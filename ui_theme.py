@@ -272,9 +272,9 @@ QComboBox QAbstractItemView {
 QTableWidget#scheduleTable {
     background: #FFFFFF;
     color: #0F172A;
-    border: 1px solid #7C8B9E;
+    border: 1px solid #475569;
     border-radius: 10px;
-    gridline-color: #7C8B9E;
+    gridline-color: #475569;
     alternate-background-color: #FAFBFD;
     selection-background-color: transparent;
     selection-color: #000000;
@@ -292,8 +292,8 @@ QHeaderView::section {
     color: #1E293B;
     padding: 2px 1px;
     border: none;
-    border-right: 1px solid #7C8B9E;
-    border-bottom: 1px solid #7C8B9E;
+    border-right: 1px solid #475569;
+    border-bottom: 1px solid #475569;
 }
 QHeaderView::section:vertical {
     color: #0F172A;
@@ -303,8 +303,8 @@ QHeaderView::section:vertical {
 QTableCornerButton::section {
     background: #F8FAFC;
     border: none;
-    border-right: 1px solid #7C8B9E;
-    border-bottom: 1px solid #7C8B9E;
+    border-right: 1px solid #475569;
+    border-bottom: 1px solid #475569;
 }
 QMenuBar {
     background: #FFFFFF;
