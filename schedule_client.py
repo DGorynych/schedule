@@ -91,6 +91,11 @@ MIN_TABLE_ROW_HEIGHT = 16
 DEFAULT_TABLE_ROW_HEIGHT = 18
 MAX_TABLE_ROW_HEIGHT = 48
 
+# Масштаб таблиц и шрифтов, %.
+MIN_TABLE_SCALE = 70
+DEFAULT_TABLE_SCALE = 100
+MAX_TABLE_SCALE = 150
+
 
 def create_status_icon(color, size=12):
     """Создаёт цветной квадрат статуса для пунктов контекстного меню."""
@@ -1191,11 +1196,16 @@ class ConnectionDialog(QDialog):
 class TableFormatDialog(QDialog):
     """Базовые настройки форматирования таблиц."""
 
-    def __init__(self, row_height=DEFAULT_TABLE_ROW_HEIGHT, parent=None):
+    def __init__(
+        self,
+        row_height=DEFAULT_TABLE_ROW_HEIGHT,
+        scale_percent=DEFAULT_TABLE_SCALE,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Форматирование таблиц")
         self.setModal(True)
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(380)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(18, 18, 18, 18)
@@ -1210,11 +1220,20 @@ class TableFormatDialog(QDialog):
         self.row_height_spin.setSingleStep(1)
         self.row_height_spin.setSuffix(" px")
         self.row_height_spin.setValue(int(row_height))
-        form_layout.addRow("Высота строк таблицы:", self.row_height_spin)
+        form_layout.addRow("Высота строк (при 100%):", self.row_height_spin)
+
+        self.scale_spin = QSpinBox()
+        self.scale_spin.setRange(MIN_TABLE_SCALE, MAX_TABLE_SCALE)
+        self.scale_spin.setSingleStep(5)
+        self.scale_spin.setSuffix(" %")
+        self.scale_spin.setValue(int(scale_percent))
+        form_layout.addRow("Масштаб таблицы:", self.scale_spin)
 
         layout.addLayout(form_layout)
 
-        hint = QLabel("Применяется к обеим таблицам месяцев.")
+        hint = QLabel(
+            "Высота строк и масштаб применяются к обеим таблицам месяцев."
+        )
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -1225,6 +1244,9 @@ class TableFormatDialog(QDialog):
 
     def get_row_height(self):
         return self.row_height_spin.value()
+
+    def get_scale(self):
+        return self.scale_spin.value()
 
 
 class MonthSelectionDialog(QDialog):
@@ -1997,7 +2019,7 @@ class MonthWidget(QWidget):
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
         table.horizontalHeader().setMinimumSectionSize(22)
-        table.verticalHeader().setMinimumSectionSize(MIN_TABLE_ROW_HEIGHT)
+        table.verticalHeader().setMinimumSectionSize(8)
         table.horizontalHeader().setFixedHeight(50)
         table.horizontalHeader().setHighlightSections(False)
         table.verticalHeader().setHighlightSections(False)
@@ -2023,8 +2045,18 @@ class MonthWidget(QWidget):
 
         font = table.verticalHeader().font()
         font.setBold(True)
-        font.setPointSizeF(8.5)
+        font.setWeight(QFont.Black)
+        font.setPointSizeF(9.5)
         table.verticalHeader().setFont(font)
+        self._apply_name_header_style(9.5)
+
+    def _apply_name_header_style(self, point_size):
+        """Жирный масштабируемый шрифт ФИО в заголовке строк."""
+        self.table.verticalHeader().setStyleSheet(
+            "QHeaderView::section {"
+            f" font-weight: 900; font-size: {point_size:.2f}pt;"
+            "}"
+        )
     
     def _export_this_month(self):
         """Экспорт таблицы этого месяца в Excel (вызов главного окна)."""
@@ -2268,7 +2300,7 @@ class MonthWidget(QWidget):
         self.fit_table_width()
 
     def fit_table_width(self):
-        """Растягивает дни по ширине карточки, сохраняя компактные итоги."""
+        """Масштабирует колонки таблицы пропорционально выбранному масштабу."""
         table = getattr(self, "table", None)
         if table is None or not self.current_period:
             return
@@ -2276,20 +2308,26 @@ class MonthWidget(QWidget):
         if table.columnCount() != days + 4:
             return
 
-        day_width = getattr(self, "_day_width", 30)
-        result_width = getattr(self, "_result_width", 58)
+        scale_factor = (
+            getattr(self, "_scale_percent", DEFAULT_TABLE_SCALE) / 100.0
+        )
+        base_result_width = 58
+        result_width = max(20, int(base_result_width * scale_factor))
+        available = table.viewport().width()
+        if days:
+            base_day_width = max(
+                30, (available - 4 * base_result_width) // days
+            )
+        else:
+            base_day_width = 30
+        day_width = max(10, int(base_day_width * scale_factor))
+        self._day_width = day_width
+        self._result_width = result_width
+
         for col in range(days):
             table.setColumnWidth(col, day_width)
         for offset in range(4):
             table.setColumnWidth(days + offset, result_width)
-
-        available = table.viewport().width()
-        total = days * day_width + 4 * result_width
-        if available > total and days:
-            per_day = (available - total) // days
-            if per_day > 0:
-                for col in range(days):
-                    table.setColumnWidth(col, day_width + per_day)
 
     def update_header_style(self):
         """Обновляет стиль заголовков таблицы."""
@@ -2328,7 +2366,7 @@ class MonthWidget(QWidget):
         font = QFont(self.table.font())
         font.setBold(True)
         font.setWeight(QFont.DemiBold)
-        font.setPointSizeF(max(8.0, 10.5 * scale_factor))
+        font.setPointSizeF(max(5.0, 10.5 * scale_factor))
         return font
 
     def _apply_cell_fonts(self, scale_percent=None):
@@ -2349,7 +2387,7 @@ class MonthWidget(QWidget):
         font = QFont(self.table.font())
         font.setBold(True)
         font.setWeight(QFont.Black)
-        font.setPointSizeF(max(8.0, 11.5 * scale_factor))
+        font.setPointSizeF(max(5.0, 11.5 * scale_factor))
         return font
 
     def _apply_total_cell_fonts(self, scale_percent=None):
@@ -2659,66 +2697,60 @@ class MonthWidget(QWidget):
         """Применение масштаба к таблице"""
         if not self.table:
             return
-        
+
         # Базовые значения (при масштабе 100%)
         base_row_height = getattr(
             self.parent_app, "table_row_height", DEFAULT_TABLE_ROW_HEIGHT
         )
         base_font_size = 10.5
         base_header_font_size = 8.5
+        base_name_font_size = 9.5
         base_header_height = 50
-        base_day_width = 30
-        base_result_width = 58
-        
+        base_name_width = 156
+
         # Рассчитываем новые значения
         scale_factor = scale_percent / 100.0
-        
+        self._scale_percent = scale_percent
+
         # Устанавливаем высоту строк и заголовка
-        new_row_height = int(base_row_height * scale_factor)
+        new_row_height = max(8, int(base_row_height * scale_factor))
         self.table.verticalHeader().setDefaultSectionSize(new_row_height)
         self.table.horizontalHeader().setFixedHeight(
-            max(44, int(base_header_height * scale_factor))
+            max(20, int(base_header_height * scale_factor))
         )
-        
-        # Устанавливаем ширину столбцов дней
-        days_count = self.table.columnCount() - 4
-        new_day_width = max(int(base_day_width * scale_factor), 10)
-        new_result_width = max(int(base_result_width * scale_factor), 30)
-        self._day_width = new_day_width
-        self._result_width = new_result_width
-        for col in range(days_count):
-            self.table.setColumnWidth(col, new_day_width)
-        
-        # Устанавливаем ширину итоговых столбцов
-        if days_count < self.table.columnCount():
-            self.table.setColumnWidth(days_count, new_result_width)  # Смены
-        if days_count + 1 < self.table.columnCount():
-            self.table.setColumnWidth(days_count + 1, new_result_width)  # Рег
-        if days_count + 2 < self.table.columnCount():
-            self.table.setColumnWidth(days_count + 2, new_result_width)  # КЦ
-        if days_count + 3 < self.table.columnCount():
-            self.table.setColumnWidth(days_count + 3, new_result_width)  # Часы
-        
-        # Обновляем шрифты
+
+        # Ширина столбца с ФИО масштабируется вместе с таблицей.
+        self.table.verticalHeader().setFixedWidth(
+            max(100, int(base_name_width * scale_factor))
+        )
+
+        # Обновляем шрифты обычных и итоговых ячеек
         font = self.table.font()
         font.setWeight(QFont.DemiBold)
         font.setPointSizeF(base_font_size * scale_factor)
         self.table.setFont(font)
         self._apply_cell_fonts(scale_percent)
         self._apply_total_cell_fonts(scale_percent)
-        
-        # Обновляем шрифты заголовков
+
+        # Шрифт заголовков дат
         self._header_font_size = base_header_font_size * scale_factor
         header_font = self.table.horizontalHeader().font()
         header_font.setBold(True)
         header_font.setPointSizeF(self._header_font_size)
         self.table.horizontalHeader().setFont(header_font)
-        self.table.verticalHeader().setFont(header_font)
-        
+
+        # ФИО сотрудников — крупнее и жирнее обычного текста.
+        name_font = self.table.verticalHeader().font()
+        name_font.setBold(True)
+        name_font.setWeight(QFont.Black)
+        name_font.setPointSizeF(base_name_font_size * scale_factor)
+        self.table.verticalHeader().setFont(name_font)
+        self._apply_name_header_style(base_name_font_size * scale_factor)
+
         # Обновляем отображение
         self.table.viewport().update()
-        
-        # Обновляем стиль заголовков после изменения масштаба
+
+        # Обновляем стиль заголовков и ширину колонок после масштаба
         self.update_header_style()
         self.fit_table_width()
 
@@ -2913,8 +2945,16 @@ class ScheduleApp(QMainWindow):
         self.last_save_time = None
         self.last_active_widget = None
         
-        # Добавляем переменную для текущего масштаба
-        self.current_scale = 100
+        # Текущий масштаб таблиц (настройка форматирования).
+        try:
+            current_scale = int(
+                self.settings.value("scale", DEFAULT_TABLE_SCALE)
+            )
+        except (TypeError, ValueError):
+            current_scale = DEFAULT_TABLE_SCALE
+        self.current_scale = max(
+            MIN_TABLE_SCALE, min(MAX_TABLE_SCALE, current_scale)
+        )
 
         # Базовая высота строк таблиц (настройка форматирования).
         # Настройка появилась недавно: при первом запуске новой версии
@@ -3302,15 +3342,21 @@ class ScheduleApp(QMainWindow):
             self.connect_to_server()
 
     def show_table_format_dialog(self):
-        """Диалог базового форматирования таблиц (высота строк)."""
-        dialog = TableFormatDialog(self.table_row_height, self)
+        """Диалог базового форматирования таблиц (высота строк и масштаб)."""
+        dialog = TableFormatDialog(
+            self.table_row_height, self.current_scale, self
+        )
         if dialog.exec_() != QDialog.Accepted:
             return
         self.table_row_height = dialog.get_row_height()
+        self.current_scale = dialog.get_scale()
         self.settings.setValue("table_row_height", self.table_row_height)
+        self.settings.setValue("scale", self.current_scale)
         self.apply_scale(self.current_scale)
         self.statusBar().showMessage(
-            f"Высота строк таблицы: {self.table_row_height} px", 2000
+            f"Высота строк: {self.table_row_height} px, "
+            f"масштаб: {self.current_scale}%",
+            2000,
         )
 
     def load_initial_data(self):
