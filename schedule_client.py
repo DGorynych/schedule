@@ -109,6 +109,12 @@ MAX_TABLE_SCALE = 150
 BASE_NAME_FONT_SIZE = 9.5
 BASE_NAME_WIDTH = 156
 
+# Базовый размер шрифта заголовков дат при масштабе 100%.
+BASE_HEADER_FONT_SIZE = 9.5
+
+# Насколько сузить колонки относительно расчётной ширины, px.
+COLUMN_WIDTH_TRIM = 2
+
 
 def create_status_icon(color, size=12):
     """Создаёт цветной квадрат статуса для пунктов контекстного меню."""
@@ -2338,11 +2344,12 @@ class MonthWidget(QWidget):
         self._result_width = result_width
 
         # Не даём заголовкам обрезаться: ширина колонки не меньше текста.
-        header_font = QFont(table.horizontalHeader().font())
+        header_font = QFont(table.font())
         header_font.setBold(True)
-        header_font.setPointSizeF(getattr(self, "_header_font_size", 8.5))
+        header_font.setPointSizeF(
+            getattr(self, "_header_font_size", BASE_HEADER_FONT_SIZE)
+        )
         header_metrics = QFontMetrics(header_font)
-        horizontal_header = table.horizontalHeader()
         for col in range(table.columnCount()):
             header_item = table.horizontalHeaderItem(col)
             text = header_item.text() if header_item is not None else ""
@@ -2350,13 +2357,10 @@ class MonthWidget(QWidget):
             needed_width = max(
                 (header_metrics.horizontalAdvance(line) for line in lines),
                 default=0,
-            ) + 10
-            # sectionSizeHint учитывает шрифт, которым реально рисуется заголовок.
-            hint = horizontal_header.sectionSizeHint(col)
-            if hint > 0:
-                needed_width = max(needed_width, hint + 4)
-            column_width = day_width if col < days else result_width
-            table.setColumnWidth(col, max(column_width, needed_width))
+            ) + 8
+            column_width = (day_width if col < days else result_width)
+            column_width -= COLUMN_WIDTH_TRIM
+            table.setColumnWidth(col, max(10, column_width, needed_width))
 
         # Ширина ФИО — не меньше самой длинной фамилии при текущем масштабе.
         name_font = QFont(table.verticalHeader().font())
@@ -2382,7 +2386,9 @@ class MonthWidget(QWidget):
     def update_header_style(self):
         """Обновляет стиль заголовков таблицы."""
         total_start = max(0, self.table.columnCount() - 4)
-        header_font_size = getattr(self, "_header_font_size", 8.5)
+        header_font_size = getattr(
+            self, "_header_font_size", BASE_HEADER_FONT_SIZE
+        )
         # Размер шрифта задаём общим правилом: в nth-child он применяется
         # ненадёжно и приводил к обрезке текста при малом масштабе.
         style_sheet = f"""
@@ -2759,7 +2765,7 @@ class MonthWidget(QWidget):
             self.parent_app, "table_row_height", DEFAULT_TABLE_ROW_HEIGHT
         )
         base_font_size = 10.5
-        base_header_font_size = 8.5
+        base_header_font_size = BASE_HEADER_FONT_SIZE
         base_header_height = 50
 
         # Рассчитываем новые значения
