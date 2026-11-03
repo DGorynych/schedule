@@ -11,7 +11,16 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from PyQt5.QtCore import QDate, QSettings, QSignalBlocker, Qt, QTime, QTimer
-from PyQt5.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap
+from PyQt5.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
@@ -95,6 +104,10 @@ MAX_TABLE_ROW_HEIGHT = 48
 MIN_TABLE_SCALE = 70
 DEFAULT_TABLE_SCALE = 100
 MAX_TABLE_SCALE = 150
+
+# Базовые размеры колонки и шрифта ФИО при масштабе 100%.
+BASE_NAME_FONT_SIZE = 9.5
+BASE_NAME_WIDTH = 156
 
 
 def create_status_icon(color, size=12):
@@ -2046,9 +2059,9 @@ class MonthWidget(QWidget):
         font = table.verticalHeader().font()
         font.setBold(True)
         font.setWeight(QFont.Black)
-        font.setPointSizeF(9.5)
+        font.setPointSizeF(BASE_NAME_FONT_SIZE)
         table.verticalHeader().setFont(font)
-        self._apply_name_header_style(9.5)
+        self._apply_name_header_style(BASE_NAME_FONT_SIZE)
 
     def _apply_name_header_style(self, point_size):
         """Жирный масштабируемый шрифт ФИО в заголовке строк."""
@@ -2324,10 +2337,47 @@ class MonthWidget(QWidget):
         self._day_width = day_width
         self._result_width = result_width
 
-        for col in range(days):
-            table.setColumnWidth(col, day_width)
-        for offset in range(4):
-            table.setColumnWidth(days + offset, result_width)
+        # Не даём заголовкам обрезаться: ширина колонки не меньше текста.
+        header_font = QFont(table.horizontalHeader().font())
+        header_font.setBold(True)
+        header_font.setPointSizeF(getattr(self, "_header_font_size", 8.5))
+        header_metrics = QFontMetrics(header_font)
+        horizontal_header = table.horizontalHeader()
+        for col in range(table.columnCount()):
+            header_item = table.horizontalHeaderItem(col)
+            text = header_item.text() if header_item is not None else ""
+            lines = [line for line in text.splitlines() if line] or [text]
+            needed_width = max(
+                (header_metrics.horizontalAdvance(line) for line in lines),
+                default=0,
+            ) + 10
+            # sectionSizeHint учитывает шрифт, которым реально рисуется заголовок.
+            hint = horizontal_header.sectionSizeHint(col)
+            if hint > 0:
+                needed_width = max(needed_width, hint + 4)
+            column_width = day_width if col < days else result_width
+            table.setColumnWidth(col, max(column_width, needed_width))
+
+        # Ширина ФИО — не меньше самой длинной фамилии при текущем масштабе.
+        name_font = QFont(table.verticalHeader().font())
+        name_font.setBold(True)
+        name_font.setWeight(QFont.Black)
+        name_font.setPointSizeF(BASE_NAME_FONT_SIZE * scale_factor)
+        name_metrics = QFontMetrics(name_font)
+        longest_name = 0
+        for row in range(table.rowCount()):
+            header_item = table.verticalHeaderItem(row)
+            if header_item is not None:
+                longest_name = max(
+                    longest_name,
+                    name_metrics.horizontalAdvance(header_item.text()),
+                )
+        table.verticalHeader().setFixedWidth(
+            max(
+                int(BASE_NAME_WIDTH * scale_factor),
+                longest_name + 16,
+            )
+        )
 
     def update_header_style(self):
         """Обновляет стиль заголовков таблицы."""
@@ -2704,9 +2754,7 @@ class MonthWidget(QWidget):
         )
         base_font_size = 10.5
         base_header_font_size = 8.5
-        base_name_font_size = 9.5
         base_header_height = 50
-        base_name_width = 156
 
         # Рассчитываем новые значения
         scale_factor = scale_percent / 100.0
@@ -2721,7 +2769,7 @@ class MonthWidget(QWidget):
 
         # Ширина столбца с ФИО масштабируется вместе с таблицей.
         self.table.verticalHeader().setFixedWidth(
-            max(100, int(base_name_width * scale_factor))
+            max(100, int(BASE_NAME_WIDTH * scale_factor))
         )
 
         # Обновляем шрифты обычных и итоговых ячеек
@@ -2743,9 +2791,9 @@ class MonthWidget(QWidget):
         name_font = self.table.verticalHeader().font()
         name_font.setBold(True)
         name_font.setWeight(QFont.Black)
-        name_font.setPointSizeF(base_name_font_size * scale_factor)
+        name_font.setPointSizeF(BASE_NAME_FONT_SIZE * scale_factor)
         self.table.verticalHeader().setFont(name_font)
-        self._apply_name_header_style(base_name_font_size * scale_factor)
+        self._apply_name_header_style(BASE_NAME_FONT_SIZE * scale_factor)
 
         # Обновляем отображение
         self.table.viewport().update()
